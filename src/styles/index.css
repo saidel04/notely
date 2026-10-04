@@ -1,0 +1,761 @@
+@import "tailwindcss";
+
+/* ---------- design tokens ---------- */
+
+:root {
+  --bg: #fbfbfa;
+  --bg-sidebar: #f5f5f3;
+  --bg-hover: rgba(15, 15, 10, 0.045);
+  --bg-active: rgba(15, 15, 10, 0.075);
+  --surface: #ffffff;
+  --border: rgba(15, 15, 10, 0.08);
+  --border-strong: rgba(15, 15, 10, 0.14);
+  --text: #23231f;
+  --text-muted: #6d6c66;
+  --text-faint: #a5a49d;
+  --accent: #4b5bd6;
+  --accent-soft: rgba(75, 91, 214, 0.1);
+  --danger: #d0453a;
+  --pdf-backdrop: #ecebe7;
+  --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.05);
+  --pop-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.12);
+  --page-filter: none;
+  --hl-yellow: rgba(255, 210, 0, 0.4);
+  --hl-green: rgba(70, 200, 110, 0.33);
+  --hl-blue: rgba(70, 150, 255, 0.3);
+  --hl-pink: rgba(255, 95, 170, 0.3);
+  --hl-blend: multiply;
+  --selection: rgba(75, 91, 214, 0.22);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #1a1a19;
+  --bg-sidebar: #161615;
+  --bg-hover: rgba(255, 255, 250, 0.05);
+  --bg-active: rgba(255, 255, 250, 0.09);
+  --surface: #222220;
+  --border: rgba(255, 255, 250, 0.07);
+  --border-strong: rgba(255, 255, 250, 0.13);
+  --text: #e8e7e3;
+  --text-muted: #9c9b95;
+  --text-faint: #65645f;
+  --accent: #8b97ff;
+  --accent-soft: rgba(139, 151, 255, 0.14);
+  --danger: #f06a5e;
+  --pdf-backdrop: #121211;
+  --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
+  --pop-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.5);
+  --page-filter: brightness(0.9) contrast(0.95);
+  --selection: rgba(139, 151, 255, 0.3);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--bg-sidebar);
+  --color-hover: var(--bg-hover);
+  --color-active: var(--bg-active);
+  --color-surface: var(--surface);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-backdrop: var(--pdf-backdrop);
+  --font-sans: "Inter Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-serif: "Source Serif 4 Variable", Georgia, serif;
+  --shadow-pop: var(--pop-shadow);
+}
+
+/* ---------- base ---------- */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+}
+
+button {
+  cursor: default;
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 1px;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+.animate-pop {
+  animation: pop-in 120ms ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.animate-fade {
+  animation: fade-in 160ms ease-out;
+}
+
+/* ---------- pdf ---------- */
+
+.pdf-page {
+  position: relative;
+  isolation: isolate;
+  margin: 0 auto;
+  background: white;
+  box-shadow: var(--page-shadow);
+  border-radius: 2px;
+}
+
+.pdf-page canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: var(--page-filter);
+  border-radius: 2px;
+}
+
+.hl {
+  position: absolute;
+  mix-blend-mode: var(--hl-blend);
+  border-radius: 2px;
+  pointer-events: none;
+  transition: box-shadow 200ms;
+}
+.hl-yellow { background: var(--hl-yellow); }
+.hl-green { background: var(--hl-green); }
+.hl-blue { background: var(--hl-blue); }
+.hl-pink { background: var(--hl-pink); }
+
+.hl-comment-dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4px 0 0 2px;
+  border-radius: 50% 50% 50% 0;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: auto;
+  cursor: help;
+}
+.bm-ribbon {
+  position: absolute;
+  right: 14px;
+  width: 12px;
+  height: 18px;
+  margin-top: -2px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+  pointer-events: auto;
+  cursor: help;
+  opacity: 0.85;
+}
+
+.search-hit {
+  position: absolute;
+  border-radius: 2px;
+  pointer-events: none;
+  background: rgba(255, 166, 0, 0.3);
+  mix-blend-mode: var(--hl-blend);
+}
+.search-hit.current {
+  background: rgba(255, 120, 0, 0.5);
+  box-shadow: 0 0 0 1.5px rgba(235, 110, 0, 0.9);
+}
+
+@keyframes hl-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  30% { box-shadow: 0 0 0 4px var(--accent); }
+}
+.hl-flash {
+  animation: hl-flash 700ms ease-in-out 2;
+}
+
+@keyframes page-flash {
+  30% { box-shadow: 0 0 0 3px var(--accent), var(--page-shadow); }
+}
+.page-flash {
+  animation: page-flash 900ms ease-in-out;
+}
+
+/* Adapted from pdfjs-dist/web/pdf_viewer.css — only the text layer is needed. */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer .markedContent {
+  display: contents;
+}
+.textLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+.textLayer ::selection {
+  background: rgba(75, 91, 214, 0.25);
+  color: transparent;
+}
+.textLayer br::selection {
+  background: transparent;
+}
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.textLayer.selecting .endOfContent {
+  top: 0;
+}
+
+/* ---------- editor ---------- */
+/* Scoped under #root to outrank CodeMirror's injected base theme. */
+#root {
+  .cm-editor {
+    background: transparent;
+    color: var(--text);
+  }
+  .cm-editor.cm-focused {
+    outline: none;
+  }
+  .cm-scroller {
+    font-family: var(--editor-font);
+    line-height: 1.7;
+    overflow: visible !important;
+  }
+  .cm-content {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 48px;
+    caret-color: var(--accent);
+  }
+  .cm-line {
+    padding: 0;
+  }
+  .cm-cursor {
+    border-left: 2px solid var(--accent) !important;
+  }
+  .cm-selectionBackground,
+  .cm-focused .cm-selectionBackground,
+  .cm-content ::selection {
+    background: var(--selection) !important;
+  }
+  .cm-placeholder {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+
+  .cm-h1 { font-size: 1.75em; font-weight: 650; letter-spacing: -0.015em; line-height: 1.35; padding-top: 0.6em !important; }
+  .cm-h2 { font-size: 1.4em; font-weight: 650; letter-spacing: -0.01em; line-height: 1.4; padding-top: 0.5em !important; }
+  .cm-h3 { font-size: 1.18em; font-weight: 640; padding-top: 0.4em !important; }
+  .cm-h4, .cm-h5, .cm-h6 { font-weight: 640; }
+  .cm-strong { font-weight: 680; }
+  .cm-em { font-style: italic; }
+  .cm-strike { text-decoration: line-through; color: var(--text-muted); }
+  .cm-inline-code {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.86em;
+    background: var(--bg-hover);
+    border-radius: 4px;
+    padding: 0.1em 0.3em;
+  }
+  .cm-codeblock {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.86em;
+    background: var(--bg-hover);
+  }
+  .cm-quote {
+    border-left: 2px solid var(--border-strong);
+    padding-left: 14px !important;
+    color: var(--text-muted);
+  }
+  .cm-md-mark {
+    color: var(--text-faint);
+  }
+  .cm-hr {
+    display: block;
+    border-top: 1px solid var(--border-strong);
+    margin: 0.8em 0;
+  }
+  .cm-bullet {
+    color: var(--text-faint);
+    padding-right: 0.15em;
+  }
+  .cm-task {
+    vertical-align: -0.1em;
+    margin: 0 0.35em 0 0;
+    accent-color: var(--accent);
+  }
+  .cm-md-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-underline-offset: 3px;
+  }
+  .cm-wikilink-raw {
+    color: var(--accent);
+  }
+
+  .cm-wikilink {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3em;
+    color: var(--accent);
+    border-radius: 4px;
+    padding: 0 0.15em;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+    transition: background 120ms;
+  }
+  .cm-wikilink:hover {
+    background: var(--accent-soft);
+    text-decoration-color: var(--accent);
+  }
+  .cm-wikilink svg {
+    width: 0.82em;
+    height: 0.82em;
+    flex: none;
+    align-self: center;
+    opacity: 0.75;
+  }
+  /* Custom-text links read as part of the sentence. */
+  .cm-wikilink.inline {
+    display: inline;
+    padding: 0;
+    border-radius: 2px;
+    text-decoration-style: solid;
+    text-decoration-thickness: 1px;
+  }
+  .cm-wikilink.inline[data-kind="highlight"] {
+    text-decoration-style: dotted;
+    text-decoration-thickness: 2px;
+  }
+  .cm-wikilink.missing {
+    color: var(--text-muted);
+    text-decoration-style: dashed;
+    text-decoration-color: var(--border-strong);
+  }
+  .cm-wikilink.quote {
+    font-style: italic;
+  }
+
+  .cm-tag {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 0.05em 0.45em;
+    font-family: var(--font-sans);
+    font-size: 0.82em;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .cm-tooltip.cm-tooltip-autocomplete {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--pop-shadow);
+    padding: 4px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+  }
+  .cm-tooltip-autocomplete > ul {
+    font-family: var(--font-sans) !important;
+    max-height: 280px !important;
+    min-width: 240px;
+  }
+  .cm-tooltip-autocomplete > ul > li {
+    border-radius: 5px;
+    padding: 4px 8px !important;
+    color: var(--text);
+  }
+  .cm-tooltip-autocomplete > ul > li[aria-selected] {
+    background: var(--accent-soft) !important;
+    color: var(--text) !important;
+  }
+  .cm-completionDetail {
+    color: var(--text-faint);
+    font-style: normal !important;
+    margin-left: 0.6em !important;
+  }
+  .cm-completionMatchedText {
+    text-decoration: none !important;
+    color: var(--accent);
+  }
+  .cm-completionIcon {
+    display: none;
+  }
+}
+
+/* ---------- link map ---------- */
+
+:root {
+  --lm-note: #8a8f9e;
+  --lm-pdf: var(--accent);
+  --lm-canvas: #d08a3c;
+  --lm-edge: rgba(15, 15, 10, 0.16);
+}
+:root[data-theme="dark"] {
+  --lm-note: #8d8c86;
+  --lm-edge: rgba(255, 255, 250, 0.14);
+}
+
+.lm .lm-edge {
+  stroke: var(--lm-edge);
+  stroke-width: 1.2;
+  transition: stroke 150ms, opacity 150ms;
+}
+.lm .lm-node {
+  cursor: pointer;
+  transition: opacity 150ms;
+}
+.lm .lm-node circle,
+.lm .lm-node rect {
+  stroke: var(--bg);
+  stroke-width: 2;
+  transition: fill 150ms;
+}
+.lm .lm-note circle { fill: var(--lm-note); }
+.lm .lm-pdf rect { fill: var(--lm-pdf); }
+.lm .lm-canvas polygon {
+  fill: var(--lm-canvas);
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+.lm .lm-node:hover polygon,
+.lm .lm-active polygon { fill: var(--accent); }
+.lm .lm-ghost circle {
+  fill: var(--bg);
+  stroke: var(--text-faint);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 2;
+}
+.lm .lm-label {
+  font: 500 11px var(--font-sans);
+  fill: var(--text-muted);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: none;
+  transition: opacity 150ms;
+}
+.lm .lm-ghost .lm-label { fill: var(--text-faint); font-style: italic; }
+.lm .lm-node:hover circle,
+.lm .lm-node:hover rect { fill: var(--accent); }
+.lm .lm-ghost:hover circle { fill: var(--bg); stroke: var(--accent); }
+.lm .lm-active circle,
+.lm .lm-active rect {
+  fill: var(--accent);
+  stroke: var(--accent-soft);
+  stroke-width: 6;
+}
+.lm .lm-active .lm-label { fill: var(--text); font-weight: 650; }
+
+/* Hovering a node dims everything outside its neighborhood. */
+.lm.lm-focus .lm-node:not(.lm-near) { opacity: 0.18; }
+.lm.lm-focus .lm-edge:not(.lm-near) { opacity: 0.12; }
+.lm.lm-focus .lm-edge.lm-near { stroke: var(--accent); stroke-width: 1.6; }
+.lm.lm-focus .lm-near .lm-label { fill: var(--text); }
+
+/* Zoomed out: labels only for hovered and active nodes. */
+.lm.lm-far .lm-label { opacity: 0; }
+.lm.lm-far .lm-near .lm-label,
+.lm.lm-far .lm-active .lm-label { opacity: 1; }
+
+/* ---------- canvas ---------- */
+
+:root {
+  --cv-node: #ffffff;
+  --cv-border: rgba(15, 15, 10, 0.2);
+  --cv-edge: #8e8d86;
+  --cv-group: rgba(15, 15, 10, 0.025);
+  --cv-dot: rgba(15, 15, 10, 0.12);
+}
+:root[data-theme="dark"] {
+  --cv-node: #262624;
+  --cv-border: rgba(255, 255, 250, 0.2);
+  --cv-edge: #7a7973;
+  --cv-group: rgba(255, 255, 250, 0.03);
+  --cv-dot: rgba(255, 255, 250, 0.09);
+}
+
+.cv {
+  background-color: var(--bg);
+  background-image: radial-gradient(circle, var(--cv-dot) 1px, transparent 1.2px);
+}
+.cv-text {
+  height: 100%;
+  padding: 10px 14px;
+  overflow: hidden;
+  font: 14px/1.45 var(--font-sans);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  word-wrap: break-word;
+}
+.cv-text.cv-center {
+  text-align: center;
+  align-items: center;
+}
+.cv-text > * {
+  margin: 0;
+}
+.cv-text > * + * {
+  margin-top: 0.35em;
+}
+.cv-text h1,
+.cv-text h2,
+.cv-text h3 {
+  font-size: 1.08em;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.cv-text ul,
+.cv-text ol {
+  padding-left: 1.1em;
+  text-align: left;
+}
+.cv-text code {
+  font: 0.85em "Cascadia Code", Consolas, monospace;
+  background: var(--bg-hover);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.cv-text a {
+  color: var(--accent);
+}
+.cv-card {
+  height: 100%;
+  padding: 10px 14px;
+  overflow: hidden;
+  font: 13px/1.45 var(--font-sans);
+  color: var(--text);
+}
+.cv-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.cv-card-title svg {
+  flex: none;
+  color: var(--accent);
+}
+.cv-card-body {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding: 0;
+  display: block;
+  height: auto;
+  text-align: left;
+}
+.cv-wikilink {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-soft);
+  text-underline-offset: 2px;
+}
+.cv-tag {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 0 0.4em;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+.cv-missing {
+  opacity: 0.55;
+}
+.cv-edge-label {
+  display: inline-block;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font: 12px/1.4 var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-group-label {
+  font: 600 13px var(--font-sans);
+}
+.cv-edge {
+  cursor: pointer;
+}
+.cv-handle {
+  fill: var(--surface);
+  stroke: var(--accent);
+}
+.cv-nw, .cv-se { cursor: nwse-resize; }
+.cv-ne, .cv-sw { cursor: nesw-resize; }
+.cv-port {
+  cursor: crosshair;
+}
+.cv-port circle:last-child {
+  fill: var(--surface);
+  stroke: var(--accent);
+  transition: r 120ms;
+}
+.cv-port:hover circle:last-child {
+  fill: var(--accent);
+}
+.cv-marquee {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+}
+.cv-editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  outline: 2px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--surface);
+  color: var(--text);
+  font: 14px/1.45 var(--font-sans);
+  text-align: center;
+  box-shadow: var(--pop-shadow);
+}
+.cv-editor-group {
+  height: 28px;
+  padding: 3px 8px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 6px;
+}
+
+/* Embedded canvas preview inside a note */
+.cm-canvas-embed {
+  margin: 6px 0;
+}
+
+/* Hover preview of a link */
+.hl-border-yellow { border-color: #e3b341; }
+.hl-border-green { border-color: #3fb950; }
+.hl-border-blue { border-color: #4b8df8; }
+.hl-border-pink { border-color: #e85aa5; }
+.hover-excerpt > * { margin: 0 0 0.5em; }
+.hover-excerpt h1, .hover-excerpt h2, .hover-excerpt h3 { font-size: 1em; font-weight: 650; color: var(--text); }
+.hover-excerpt ul, .hover-excerpt ol { padding-left: 1.2em; }
+
+/* The logo is black-on-white; invert it for dark mode. */
+:root[data-theme="dark"] .app-logo {
+  filter: invert(1);
+}
+
+/* ---------- PDF page themes ---------- */
+
+/* Dark pages: invert lightness but rotate hues back so images and colors stay recognizable. */
+[data-page-theme="dark"] .pdf-page {
+  background: #1d1d1b;
+}
+[data-page-theme="dark"] .pdf-page canvas {
+  filter: invert(0.9) hue-rotate(180deg) contrast(0.92) brightness(1.04);
+}
+[data-page-theme="dark"] {
+  --hl-blend: screen;
+  --hl-yellow: rgba(255, 205, 40, 0.42);
+  --hl-green: rgba(70, 210, 120, 0.38);
+  --hl-blue: rgba(90, 160, 255, 0.4);
+  --hl-pink: rgba(255, 110, 180, 0.4);
+}
+[data-page-theme="dark"] .search-hit {
+  mix-blend-mode: screen;
+}
+
+[data-page-theme="sepia"] .pdf-page {
+  background: #f3e9d2;
+}
+[data-page-theme="sepia"] .pdf-page canvas {
+  filter: sepia(0.5) saturate(1.1) brightness(0.96) contrast(0.96);
+}
+
+[data-page-theme="light"] .pdf-page canvas {
+  filter: none;
+}
