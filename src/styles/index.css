@@ -943,3 +943,63 @@ button {
 [data-page-theme="light"] .pdf-page canvas {
   filter: none;
 }
+
+/* ---------- flashcards ---------- */
+
+/* A card is one button whose two faces are back to back; flipping rotates the
+   pair, so the question and its answer are literally the same card. */
+.card-flip {
+  display: block;
+  width: 100%;
+  perspective: 1000px;
+}
+
+.card-flip-inner {
+  position: relative;
+  display: block;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 340ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.card-flip[data-flipped] .card-flip-inner {
+  transform: rotateY(180deg);
+}
+
+.card-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  backface-visibility: hidden;
+  transition: border-color 140ms;
+}
+
+.card-flip:hover .card-face {
+  border-color: var(--border-strong);
+}
+
+.card-back {
+  transform: rotateY(180deg);
+  border-left: 3px solid var(--accent);
+}
+
+/* The text takes the room left over and scrolls if a card is long. */
+.card-text {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+}
+
+/* The single large card in a review session. */
+.card-roomy .card-face {
+  gap: 10px;
+  padding: 19px 23px;
+}

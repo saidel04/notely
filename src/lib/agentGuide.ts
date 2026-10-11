@@ -1,7 +1,7 @@
 // The vault format, written for AI agents. Notely writes it to <vault>/AGENTS.md
 // and the MCP server returns it from `get_guide`. Bump the version when it changes.
 
-export const AGENT_GUIDE_VERSION = 6;
+export const AGENT_GUIDE_VERSION = 7;
 
 export const AGENT_GUIDE = `<!-- notely:generated v${AGENT_GUIDE_VERSION} — Notely keeps this file up to date. Delete this line to stop it. -->
 # Notely vault — guide for AI agents
@@ -20,10 +20,11 @@ otherwise edit the files directly following the rules below.
   <Notebook>/                    ← a notebook is a top-level folder
     <Note name>.md               ← a note (the file name is its title)
     <Canvas name>.canvas         ← a diagram (JSON Canvas)
+    <Deck name>.cards            ← a flashcard deck, one "Question: answer" per line
     _pdfs/<file>.pdf             ← PDFs imported into the notebook
     _assets/<image>.png          ← images shown in notes
     .notely/highlights/<file>.pdf.json   ← PDF highlights (read-only for agents)
-    .notely/review.json          ← the reader's flashcard progress; don't touch
+    .notely/review.json          ← the reader's flashcard review progress; don't touch
     .notely/history/<note>/…     ← earlier versions of notes (kept by the app)
     .notely/cache/…              ← app caches; ignore
 \`\`\`
@@ -90,11 +91,36 @@ Reuse existing tags (MCP \`list_tags\`) rather than inventing near-duplicates.
   nodes to their text and lays out unplaced nodes as a top-to-bottom flowchart when it loads the file.
   Aliases \`label\` (for \`text\`) and \`from\`/\`to\` (for \`fromNode\`/\`toNode\`) are accepted.
 
+## Flashcards
+
+A \`.cards\` file is a deck the reader studies with spaced repetition. **One card per
+line**, written \`Question: answer\`:
+
+\`\`\`
+# Chapter 3 — glycolysis (lines starting with # are notes, not cards)
+What does ATP stand for?: Adenosine triphosphate
+Where does glycolysis happen?: In the cytosol
+Net ATP yield per glucose?: 2 ATP
+\`\`\`
+
+- The **first colon** splits the card, so an answer may contain colons; write a colon
+  *inside a question* as \`\\:\`.
+- Blank lines and \`#\` lines are ignored; a line with no colon is shown to the reader
+  as a mistake to fix, so don't leave prose in a deck.
+- Keep questions short and answerable from memory, one fact each — a card the reader
+  can only half-answer is worse than two cards.
+- A card's review progress is keyed to its **question**, so rewriting an answer (or
+  renaming the deck) keeps its schedule; rewriting the question starts it over.
+- Good decks come from the notebook's own notes and PDF highlights: name the deck after
+  the topic (e.g. \`Glycolysis.cards\`) and keep it to one subject.
+
 ## Good practice
 
 - One idea per note; connect notes with \`[[links]]\` rather than repeating content.
 - When summarizing a PDF, quote sparingly and cite pages: \`[[paper.pdf#page=4]]\`.
 - Embed a diagram where it is discussed: \`![[Process.canvas]]\` on its own line.
+- Asked to make study material, write a \`.cards\` deck rather than a note full of Q&A —
+  only a deck is reviewable.
 - Don't edit files under \`.notely/\` and don't rename files by hand (links would break) —
   use the MCP \`rename_note\` tool, which rewrites links everywhere.
 `;

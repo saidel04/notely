@@ -1,4 +1,4 @@
-import { BookOpen, Columns2, FileText, Link2, Network, Workflow, X, XCircle } from "lucide-react";
+import { BookOpen, Columns2, FileText, Layers, Link2, Network, Workflow, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ITEM_MIME } from "../../lib/dragQuote";
 import { formatLink } from "../../lib/links";
@@ -11,7 +11,8 @@ export const TAB_MIME = "application/x-notely-tab";
 const label = (item: PaneItem) => (item.kind === "pdf" ? item.name.replace(/\.pdf$/i, "") : item.name);
 
 function KindIcon({ kind }: { kind: PaneItem["kind"] }) {
-  const Icon = kind === "note" ? FileText : kind === "pdf" ? BookOpen : kind === "canvas" ? Workflow : Network;
+  const Icon =
+    kind === "note" ? FileText : kind === "pdf" ? BookOpen : kind === "canvas" ? Workflow : kind === "deck" ? Layers : Network;
   return <Icon size={13} aria-hidden="true" />;
 }
 

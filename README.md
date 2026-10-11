@@ -6,13 +6,13 @@ A calm, minimal Windows desktop app for reading PDFs and keeping linked notes be
 - **Linked Markdown notes** — live-preview editor, `[[links]]` to notes, PDFs, pages, highlighted quotes, bookmarks and canvases (also across notebooks), links on any words you choose, hover previews, backlinks and `#tags`.
 - **Side by side** — two resizable panes; drag a quote from the PDF into a note and it lands as a cited blockquote.
 - **Figures & images** — box a diagram or equation on a PDF page and it drops into your note as an image linked to its page; paste or drop screenshots straight into notes.
-- **Study** — flashcards from your highlights (a highlight's comment is the question) with spaced repetition; a heading outline and find & replace in every note.
+- **Study** — flashcard decks you write yourself: one card per line as `Question: answer` in a `.cards` file; click a card to flip it, or review the whole notebook with spaced repetition. Plus a heading outline and find & replace in every note.
 - **Citations** — APA references and BibTeX for the PDFs a note cites, copied, exported as `.bib`, or added as a References section.
 - **Canvases** — diagrams and flowcharts in the open [JSON Canvas](https://jsoncanvas.org) format, embeddable in notes with `![[Name.canvas]]`.
 - **Explore** — notebook-wide search, a link map of how everything connects, Markdown/PDF export.
-- **Agent-friendly** — a bundled MCP server lets AI agents (Claude Code, Claude Desktop, Cursor…) create notebooks, write linked notes, read PDFs and highlights, and draw diagrams. Every vault also contains an `AGENTS.md` describing the format.
+- **Agent-friendly** — a bundled MCP server lets AI agents (Claude Code, Claude Desktop, Cursor…) create notebooks, write linked notes, read PDFs and highlights, draw diagrams and build flashcard decks. Every vault also contains an `AGENTS.md` describing the format.
 
-Everything is stored as plain files in a folder you choose — notebooks are folders, notes are `.md` files.
+Everything is stored as plain files in a folder you choose — notebooks are folders, notes are `.md` files, flashcard decks are `.cards` files.
 
 ## Development
 

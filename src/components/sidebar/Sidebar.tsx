@@ -11,6 +11,7 @@ import {
   FolderOpen,
   GraduationCap,
   Hash,
+  Layers,
   LayoutTemplate,
   Link2,
   Merge,
@@ -36,7 +37,7 @@ import { formatLink, sameName } from "../../lib/links";
 import { validateTag } from "../../lib/tags";
 import { templates } from "../../lib/templateActions";
 import { checkForUpdates } from "../../lib/updates";
-import { useDueCount } from "../../store/deck";
+import { useDeckCards, useDueCount } from "../../store/deck";
 import { useHighlights } from "../../store/highlightStore";
 import { useTagged, useTagIndex } from "../../store/tagIndex";
 import { useUi } from "../../store/uiStore";
@@ -55,6 +56,7 @@ export function Sidebar() {
   const tagged = useTagged(tagFilter);
   const notes = notebook?.notes.filter((n) => !tagged || tagged.notes.has(n.name)) ?? [];
   const canvases = notebook?.canvases.filter((c) => !tagged || tagged.canvases.has(c.name)) ?? [];
+  const decks = notebook?.decks ?? [];
 
   const isOpen = (kind: PaneItem["kind"], name: string) =>
     panes.some((p) => p?.kind === kind && sameName(p.name, name));
@@ -70,6 +72,7 @@ export function Sidebar() {
     const v = useVault.getState();
     if (item.kind === "note") await v.renameNote(item.name, next);
     else if (item.kind === "canvas") await v.renameCanvas(item.name, next);
+    else if (item.kind === "deck") await v.renameDeck(item.name, next);
     else {
       useHighlights.getState().forget(activeNotebook!, item.name);
       await v.renamePdf(item.name, next);
@@ -80,6 +83,7 @@ export function Sidebar() {
     const v = useVault.getState();
     if (item.kind === "note") void v.deleteNote(item.name);
     else if (item.kind === "canvas") void v.deleteCanvas(item.name);
+    else if (item.kind === "deck") void v.deleteDeck(item.name);
     else {
       useHighlights.getState().forget(activeNotebook!, item.name);
       void v.deletePdf(item.name);
@@ -203,6 +207,28 @@ export function Sidebar() {
           })}
         </Section>
 
+        {!tagFilter && (
+          <Section title="Flashcards" action={{ title: "New flashcard deck", icon: <Plus size={14} />, onClick: () => void actions.newDeck() }}>
+            {decks.length === 0 && <Hint>One card per line: “Question: answer”</Hint>}
+            {decks.map((d) => {
+              const item: PaneItem = { kind: "deck", name: d.name };
+              return (
+                <DeckRow
+                  key={d.name}
+                  name={d.name}
+                  open={isOpen("deck", d.name)}
+                  focused={isFocused("deck", d.name)}
+                  renaming={renaming?.kind === "deck" && renaming.name === d.name}
+                  onRename={(v) => commitRename(item, v)}
+                  onCancelRename={() => setRenaming(null)}
+                  onClick={(e) => openItem(item, e.ctrlKey)}
+                  onContextMenu={(e) => menu.open(e, item)}
+                />
+              );
+            })}
+          </Section>
+        )}
+
         <TagsSection active={tagFilter} />
       </div>
 
@@ -216,15 +242,20 @@ export function Sidebar() {
           items={[
             { label: "Open", icon: <FileText />, onSelect: () => openItem(menu.state!.data, false) },
             { label: "Open to the side", icon: <Columns2 />, hint: "Ctrl+click", onSelect: () => openItem(menu.state!.data, true) },
-            {
-              label: "Copy link",
-              icon: <Link2 />,
-              onSelect: () => {
-                const it = menu.state!.data;
-                void navigator.clipboard.writeText(formatLink(it.kind === "canvas" ? `${it.name}.canvas` : it.name));
-                useUi.getState().toast("Link copied — select words in a note and paste to link them");
-              },
-            },
+            // Decks aren't link targets; reviewing them is what you'd want here instead.
+            ...(menu.state.data.kind === "deck"
+              ? [{ label: "Review this deck", icon: <GraduationCap />, onSelect: () => actions.review(menu.state!.data.name) }]
+              : [
+                  {
+                    label: "Copy link",
+                    icon: <Link2 />,
+                    onSelect: () => {
+                      const it = menu.state!.data;
+                      void navigator.clipboard.writeText(formatLink(it.kind === "canvas" ? `${it.name}.canvas` : it.name));
+                      useUi.getState().toast("Link copied — select words in a note and paste to link them");
+                    },
+                  },
+                ]),
             "divider",
             { label: "Rename", icon: <Pencil />, onSelect: () => setRenaming(menu.state!.data) },
             { label: "Delete", icon: <Trash2 />, danger: true, onSelect: () => remove(menu.state!.data) },
@@ -349,7 +380,7 @@ function ToolRow({
   );
 }
 
-/** Flashcards from highlights, with how many are waiting. */
+/** Flashcard review, with how many cards are waiting across the notebook's decks. */
 function ReviewRow() {
   const due = useDueCount();
   return (
@@ -486,6 +517,7 @@ const Hint = ({ children }: { children: React.ReactNode }) => (
 function Row({
   icon,
   label,
+  count,
   renameValue,
   open,
   focused,
@@ -498,6 +530,8 @@ function Row({
 }: {
   icon: React.ReactNode;
   label: string;
+  /** A number shown at the end of the row (a deck's card count). */
+  count?: number;
   drag?: PaneItem;
   renameValue?: string;
   open: boolean;
@@ -533,7 +567,7 @@ function Row({
     );
   }
 
-  const kindWord = drag?.kind === "pdf" ? "PDF" : drag?.kind === "canvas" ? "canvas" : "note";
+  const kindWord = drag?.kind === "pdf" ? "PDF" : drag?.kind === "canvas" ? "canvas" : drag ? "note" : "deck";
   return (
     <button
       onClick={onClick}
@@ -556,8 +590,22 @@ function Row({
       <span className={focused ? "text-accent" : "text-faint"} aria-hidden="true">
         {icon}
       </span>
-      <span className="truncate">{label}</span>
+      <span className="flex-1 truncate">{label}</span>
+      {count !== undefined && <span className="shrink-0 text-[11px] text-faint tabular-nums">{count}</span>}
     </button>
+  );
+}
+
+/** A deck row: the same as any item row, with how many cards it holds. */
+function DeckRow(props: Omit<Parameters<typeof Row>[0], "icon" | "label" | "drag"> & { name: string }) {
+  const { cards } = useDeckCards(props.name);
+  return (
+    <Row
+      {...props}
+      icon={<Layers size={14} />}
+      label={props.name}
+      count={cards.length || undefined}
+    />
   );
 }
 

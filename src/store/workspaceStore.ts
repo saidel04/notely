@@ -25,7 +25,8 @@ export type PaneItem =
   | { kind: "note"; name: string; target?: NoteTarget }
   | { kind: "pdf"; name: string; target?: PdfTarget }
   | { kind: "graph"; name: string }
-  | { kind: "canvas"; name: string };
+  | { kind: "canvas"; name: string }
+  | { kind: "deck"; name: string };
 
 export type PaneIndex = 0 | 1;
 

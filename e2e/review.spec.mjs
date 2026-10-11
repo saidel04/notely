@@ -1,49 +1,74 @@
-// Flashcard review: highlights become cards, answers are scheduled with
-// spaced repetition, and progress is kept.
+// Flashcards: a `.cards` deck is a file of "Question: answer" lines, cards flip
+// when clicked, and answers are scheduled with spaced repetition.
 import { checks } from "./harness.mjs";
 
-export const name = "flashcard review";
+export const name = "flashcards";
+
+const DECK = "E2E deck";
+const CARDS = [
+  ["What must the defenders guard?", "The gates, at night"],
+  ["How are watchmen chosen?", "By lot, each evening"],
+  ["Who keeps the keys?", "The castellan"],
+];
+const TEXT = `# a comment line, not a card\n${CARDS.map(([q, a]) => `${q}: ${a}`).join("\n")}\n`;
 
 export async function run({ page, evaluate, wait }) {
   const c = checks();
 
-  // Make two highlights (one with a comment = a question) on the first PDF.
-  const nb = await evaluate(async () => {
+  // A deck written straight to disk, as the user (or an agent) would.
+  const nb = await evaluate(async (deck) => {
     const V = window.__notely.useVault.getState();
-    const n = V.notebooks.find((x) => x.pdfs.length);
+    const n = V.notebooks[0];
     if (!n) return null;
     await V.setActiveNotebook(n.name);
-    const H = window.__notely.useHighlights.getState();
-    const pdf = n.pdfs[0].name;
-    await H.ensure(n.name, pdf);
-    const rect = (y) => [{ page: 1, x: 0.1, y, w: 0.4, h: 0.02 }];
-    const a = H.add(n.name, pdf, { page: 1, rects: rect(0.1), text: "The defenders must guard the gates at night.", color: "yellow", comment: "What must the defenders guard?" });
-    const b = H.add(n.name, pdf, { page: 1, rects: rect(0.2), text: "Watchmen are chosen by lot each evening.", color: "green" });
-    let cards = 0;
-    for (const p of n.pdfs) cards += (await H.ensure(n.name, p.name)).filter((h) => h.text.trim()).length;
-    return { notebook: n.name, pdf, ids: [a.id, b.id], cards };
-  });
-  if (!nb) {
-    console.log("  (no PDF in the sandbox — skipping)");
-    return c;
-  }
-  await evaluate(async (n) => {
-    await window.__notely.useReview.getState().load(n.notebook);
+    // Leave no overlay open and no deck behind from an earlier run.
+    window.__notely.useUi.setState({ review: null, palette: null, history: null });
+    for (const d of n.decks.filter((x) => x.name.startsWith(deck.DECK))) {
+      await window.__notely.useVault.getState().deleteDeck(d.name);
+    }
+    const name = await window.__notely.useVault.getState().createDeck(deck.DECK, deck.TEXT);
+    await window.__notely.useReview.getState().load(n.name);
     window.__notely.useReview.setState({ states: {} });
     window.__notely.useWorkspace.getState().setLayout([null, null], 0);
-  }, nb);
+    return { notebook: n.name, deck: name, cards: deck.CARDS.length };
+  }, { DECK, TEXT, CARDS });
+  if (!nb) {
+    console.log("  (no notebook in the sandbox — skipping)");
+    return c;
+  }
   await wait(1200);
 
+  // ----- the deck's own view -----
+
+  await page.locator(`aside button[aria-label="deck: ${nb.deck}"]`).click();
+  await wait(700);
+  const faces = page.locator('button.card-flip');
+  c.ok(`the deck shows ${nb.cards} cards`, (await faces.count()) === nb.cards);
+  c.ok("the comment line is not a card", !(await page.getByText("a comment line").count()));
+
+  const first = faces.first();
+  c.ok("a card starts on its question", (await first.getAttribute("data-flipped")) === null);
+  await first.click();
+  await wait(500);
+  c.ok("clicking a card flips it to the answer", (await first.getAttribute("data-flipped")) === "true");
+  await first.click();
+  await wait(500);
+  c.ok("clicking again flips it back", (await first.getAttribute("data-flipped")) === null);
+
+  // ----- review -----
+
   const badge = await page.locator('aside button[aria-label^="Review flashcards"]').getAttribute("aria-label");
-  c.ok(`sidebar shows ${nb.cards} cards waiting`, badge === `Review flashcards, ${Math.min(nb.cards, 20)} waiting`);
+  c.ok(`sidebar shows ${nb.cards} cards waiting`, badge === `Review flashcards, ${nb.cards} waiting`);
 
   await page.locator('aside button[aria-label^="Review flashcards"]').click();
   await wait(1000);
-  c.ok("review panel opens with a card", (await page.getByRole("button", { name: /Show answer/ }).count()) === 1);
+  c.ok("review opens with a card", (await page.getByRole("button", { name: /Show answer/ }).count()) === 1);
 
-  await page.keyboard.press("Space");
-  await wait(300);
-  c.ok("Space reveals the passage and the answer buttons", (await page.locator('[role="dialog"] blockquote').count()) === 1 && (await page.getByRole("button", { name: /^Good/ }).count()) === 1);
+  const under = page.locator('[role="dialog"] button.card-flip');
+  await under.click();
+  await wait(500);
+  c.ok("clicking the card under review reveals the answer", (await under.getAttribute("data-flipped")) === "true");
+  c.ok("the answer buttons appear", (await page.getByRole("button", { name: /^Good/ }).count()) === 1);
 
   // Good on the first card, Again on the next (it comes back), then Good.
   await page.keyboard.press("3");
@@ -81,8 +106,15 @@ export async function run({ page, evaluate, wait }) {
   const reloaded = await evaluate(() => Object.keys(window.__notely.useReview.getState().states).length);
   c.ok("progress is saved to the notebook", reloaded === nb.cards);
 
-  // Clean up the test highlights.
-  await evaluate((n) => n.ids.forEach((id) => window.__notely.useHighlights.getState().remove(n.notebook, n.pdf, id)), nb);
+  // Editing an answer keeps the card's schedule; rewriting a question makes a new card.
+  await evaluate(async (n) => {
+    window.__notely.useDecks.getState().set(n.deck, "What must the defenders guard?: The gates, always\n");
+  }, nb);
+  await wait(900);
+  const afterEdit = await evaluate(() => Object.keys(window.__notely.useReview.getState().states).length);
+  c.ok("progress is keyed to the question, not the answer", afterEdit === nb.cards);
+
+  await evaluate(async (n) => await window.__notely.useVault.getState().deleteDeck(n.deck), nb);
   await wait(800);
   return c;
 }

@@ -1,39 +1,43 @@
 import { useEffect, useMemo } from "react";
+import { Card, parseDeck } from "../lib/flashcards";
 import { DeckCard, deckStats } from "../lib/srs";
-import { Highlight, hlKey, useHighlights } from "./highlightStore";
+import { useDecks } from "./deckStore";
 import { useReview } from "./reviewStore";
 import { useVault } from "./vaultStore";
 
-/** A flashcard: one highlight (its comment is the question, the passage the answer). */
-export interface Flashcard extends DeckCard {
-  pdf: string;
-  hl: Highlight;
+/** A flashcard: one `Question: answer` line of a deck file. */
+export interface Flashcard extends DeckCard, Card {
+  /** The deck (file) it comes from. */
+  deck: string;
 }
 
-/** Flashcards for a notebook — every highlight in its PDFs, or just one PDF's. */
-export function useDeck(notebook: string | null, pdf: string | null = null) {
+const toCards = (deck: string, cards: Card[]): Flashcard[] =>
+  cards.map((c) => ({ ...c, deck, order: [deck, c.line] as [string, number] }));
+
+/** The cards of one deck, parsed from its file as it is edited. */
+export function useDeckCards(deck: string) {
+  const text = useDecks((s) => s.text[deck]);
+  return useMemo(() => parseDeck(text ?? ""), [text]);
+}
+
+/**
+ * Flashcards for a notebook — every card in its decks, or just one deck's.
+ * `loaded` is false until the decks' files have been read.
+ */
+export function useDeck(notebook: string | null, deck: string | null = null) {
   const nb = useVault((s) => s.notebooks.find((n) => n.name === notebook));
-  const byPdf = useHighlights((s) => s.byPdf);
-  const pdfs = useMemo(() => (nb?.pdfs.map((p) => p.name) ?? []).filter((p) => !pdf || p === pdf), [nb, pdf]);
+  const text = useDecks((s) => (s.notebook === notebook ? s.text : null));
+  const names = useMemo(() => (nb?.decks.map((d) => d.name) ?? []).filter((d) => !deck || d === deck), [nb, deck]);
 
   useEffect(() => {
-    if (!notebook) return;
-    for (const p of pdfs) void useHighlights.getState().ensure(notebook, p);
-    void useReview.getState().load(notebook);
-  }, [notebook, pdfs]);
+    if (notebook) void useReview.getState().load(notebook);
+  }, [notebook]);
 
   const cards = useMemo<Flashcard[]>(
-    () =>
-      notebook
-        ? pdfs.flatMap((p) =>
-            (byPdf[hlKey(notebook, p)] ?? [])
-              .filter((h) => h.text.trim())
-              .map((h) => ({ id: h.id, order: [p, h.page] as [string, number], pdf: p, hl: h })),
-          )
-        : [],
-    [byPdf, pdfs, notebook],
+    () => (text ? names.flatMap((d) => toCards(d, parseDeck(text[d] ?? "").cards)) : []),
+    [text, names],
   );
-  const loaded = !!notebook && pdfs.every((p) => byPdf[hlKey(notebook, p)] !== undefined);
+  const loaded = !notebook || (!!text && names.every((d) => d in text));
   return { cards, loaded };
 }
 

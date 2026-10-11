@@ -9,6 +9,7 @@ import {
   GraduationCap,
   CalendarDays,
   History,
+  Layers,
   LayoutTemplate,
   ListPlus,
   ListTree,
@@ -76,7 +77,7 @@ export function CommandPalette() {
       >
         <Command.Input
           autoFocus
-          placeholder={mode === "files" ? (side ? "Open beside…" : "Find a note or PDF…") : "Type a command…"}
+          placeholder={mode === "files" ? (side ? "Open beside…" : "Find a note, PDF or deck…") : "Type a command…"}
           className="w-full border-b border-line bg-transparent px-4 py-3.5 text-[14.5px] text-ink outline-none placeholder:text-faint"
         />
         <Command.List className="max-h-[360px] overflow-y-auto p-1.5 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-faint [&_[cmdk-group-heading]]:uppercase">
@@ -105,6 +106,17 @@ export function CommandPalette() {
                   >
                     {c.name}
                     <span className="ml-2 text-[11px] text-faint">Canvas</span>
+                  </Item>
+                ))}
+                {nb?.decks.map((d) => (
+                  <Item
+                    key={"d" + d.name}
+                    value={"deck flashcards " + d.name}
+                    icon={<Layers />}
+                    onSelect={run(() => ws.open({ kind: "deck", name: d.name }, side ? { side: true } : {}))}
+                  >
+                    {d.name}
+                    <span className="ml-2 text-[11px] text-faint">Flashcards</span>
                   </Item>
                 ))}
                 {nb?.pdfs.map((p) => (
@@ -154,6 +166,9 @@ export function CommandPalette() {
                 <Item value="New canvas diagram flowchart" icon={<Workflow />} onSelect={run(() => void actions.newCanvas())}>
                   New canvas
                 </Item>
+                <Item value="New flashcard deck cards study" icon={<Layers />} onSelect={run(() => void actions.newDeck())}>
+                  New flashcard deck
+                </Item>
                 {current?.kind === "note" && (
                   <Item value="Insert new canvas into note embed diagram" icon={<Workflow />} onSelect={run(() => void actions.insertCanvasIntoNote())}>
                     Insert a new canvas into “{current.name}”
@@ -170,9 +185,14 @@ export function CommandPalette() {
                 <Item value="Search notebook find text" icon={<Search />} hint="Ctrl Shift F" onSelect={run(() => actions.searchNotebook())}>
                   Search notebook
                 </Item>
-                <Item value="Review flashcards highlights spaced repetition study" icon={<GraduationCap />} onSelect={run(() => actions.review())}>
+                <Item value="Review flashcards decks spaced repetition study" icon={<GraduationCap />} onSelect={run(() => actions.review())}>
                   Review flashcards
                 </Item>
+                {current?.kind === "deck" && (
+                  <Item value="Review this deck flashcards" icon={<GraduationCap />} onSelect={run(() => actions.review(current.name))}>
+                    Review “{current.name}” only
+                  </Item>
+                )}
                 <Item value="Open link map graph" icon={<Network />} hint="Ctrl G" onSelect={run(() => actions.openLinkMap())}>
                   Open link map
                 </Item>

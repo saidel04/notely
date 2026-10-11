@@ -2,6 +2,7 @@ import {
   Columns2,
   Download,
   FilePlus2,
+  GraduationCap,
   History,
   LayoutTemplate,
   ListPlus,
@@ -33,6 +34,7 @@ const NoteEditor = lazy(() => import("../editor/NoteEditor").then((m) => ({ defa
 const PdfViewer = lazy(() => import("../pdf/PdfViewer").then((m) => ({ default: m.PdfViewer })));
 const LinkMap = lazy(() => import("../graph/LinkMap").then((m) => ({ default: m.LinkMap })));
 const CanvasView = lazy(() => import("../canvas/CanvasView").then((m) => ({ default: m.CanvasView })));
+const DeckView = lazy(() => import("../flashcards/DeckView").then((m) => ({ default: m.DeckView })));
 
 export function Workspace() {
   const panes = useWorkspace((s) => s.panes);
@@ -167,6 +169,8 @@ function Pane({ index, item, split }: { index: PaneIndex; item: PaneItem | null;
             <LinkMap pane={index} />
           ) : item?.kind === "canvas" ? (
             <CanvasView key={`canvas:${item.name}`} notebook={notebook} name={item.name} pane={index} />
+          ) : item?.kind === "deck" ? (
+            <DeckView key={`deck:${item.name}`} notebook={notebook} name={item.name} />
           ) : (
             <EmptyPane />
           )}
@@ -196,7 +200,12 @@ function ItemMenu({ item, pane }: { item: PaneItem; pane: PaneIndex }) {
           "divider",
           { label: "Insert a new canvas here", icon: <Workflow />, onSelect: () => void actions.insertCanvasIntoNote() },
         ]
-      : item.kind === "pdf"
+      : item.kind === "deck"
+        ? [
+            { label: "Review this deck", icon: <GraduationCap />, onSelect: () => actions.review(item.name) },
+            { label: "Review every deck", icon: <GraduationCap />, onSelect: () => actions.review() },
+          ]
+        : item.kind === "pdf"
         ? [
             { label: "Collect highlights into a note", icon: <FilePlus2 />, onSelect: () => void noteFromHighlights(item.name) },
             { label: "Export highlights as Markdown…", icon: <Download />, onSelect: () => void exportHighlights(item.name) },

@@ -4,8 +4,8 @@ import { errorMessage, vaultApi } from "../lib/vault";
 import { useUi } from "./uiStore";
 
 // Spaced-repetition progress for the active notebook's flashcards, stored in
-// `<notebook>/.notely/review.json` and keyed by highlight id (so it survives
-// renaming the PDF).
+// `<notebook>/.notely/review.json` and keyed by card id — a hash of the card's
+// question — so progress survives editing an answer or renaming the deck.
 
 interface ReviewStore {
   notebook: string | null;

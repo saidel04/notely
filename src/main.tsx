@@ -22,7 +22,8 @@ if (import.meta.env.DEV) {
     import("./store/linkIndex"),
     import("./store/canvasStore"),
     import("./store/reviewStore"),
-  ]).then(([ws, hl, li, cv, rv]) => {
+    import("./store/deckStore"),
+  ]).then(([ws, hl, li, cv, rv, dk]) => {
     Object.assign(window, {
       __notely: {
         useVault,
@@ -32,6 +33,7 @@ if (import.meta.env.DEV) {
         useLinkIndex: li.useLinkIndex,
         useCanvases: cv.useCanvases,
         useReview: rv.useReview,
+        useDecks: dk.useDecks,
       },
     });
   });

@@ -79,10 +79,18 @@ export const actions = {
     useUi.getState().openPalette("search");
   },
 
-  /** Flashcard review of the notebook's highlights (or one PDF's). */
-  review(pdf: string | null = null) {
+  /** Creates a flashcard deck and opens it, ready for `Question: answer` lines. */
+  async newDeck(side = false) {
+    const name = await useVault.getState().createDeck("Untitled deck");
+    if (!name) return null;
+    useWorkspace.getState().open({ kind: "deck", name }, side ? { side: true } : {});
+    return name;
+  },
+
+  /** Flashcard review of every deck in the notebook (or just one deck's cards). */
+  review(deck: string | null = null) {
     if (!useVault.getState().activeNotebook) return;
-    useUi.setState({ review: { pdf }, palette: null });
+    useUi.setState({ review: { deck }, palette: null });
   },
 
   async importPdf() {

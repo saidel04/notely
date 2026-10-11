@@ -11,7 +11,6 @@ import {
   Crop,
   Download,
   FilePlus2,
-  GraduationCap,
   Highlighter,
   Link2,
   Loader2,
@@ -24,7 +23,6 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { actions } from "../../lib/actions";
 import { saveImageFile } from "../../lib/assets";
 import { startQuoteDrag } from "../../lib/dragQuote";
 import { editors, insertBlock } from "../../lib/editorRegistry";
@@ -694,9 +692,6 @@ export function PdfViewer({
           actions={
             panel === "highlights" && highlights.length > 0 ? (
               <>
-                <IconBtn title="Review these highlights as flashcards" onClick={() => actions.review(pdf)}>
-                  <GraduationCap size={14} />
-                </IconBtn>
                 <IconBtn title="Collect highlights into a new note" onClick={() => noteFromHighlights(pdf)}>
                   <FilePlus2 size={14} />
                 </IconBtn>

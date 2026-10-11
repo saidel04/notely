@@ -77,6 +77,11 @@ fn canvas_path(state: &State<VaultState>, notebook: &str, canvas: &str) -> Res<P
     Ok(notebook_dir(state, notebook)?.join(format!("{}.canvas", check_name(canvas)?)))
 }
 
+/// A flashcard deck: one `Question: answer` per line.
+fn deck_path(state: &State<VaultState>, notebook: &str, deck: &str) -> Res<PathBuf> {
+    Ok(notebook_dir(state, notebook)?.join(format!("{}.cards", check_name(deck)?)))
+}
+
 fn pdf_path(state: &State<VaultState>, notebook: &str, pdf: &str) -> Res<PathBuf> {
     let name = check_name(pdf)?;
     if !name.to_lowercase().ends_with(".pdf") {
@@ -200,6 +205,7 @@ pub struct Notebook {
     notes: Vec<FileMeta>,
     pdfs: Vec<FileMeta>,
     canvases: Vec<FileMeta>,
+    decks: Vec<FileMeta>,
 }
 
 fn list_files(dir: &Path, ext: &str) -> Vec<FileMeta> {
@@ -278,6 +284,7 @@ pub fn list_vault(state: State<VaultState>) -> Res<Vec<Notebook>> {
                 notes: list_files(&dir, ".md"),
                 pdfs: list_files(&dir.join(PDF_DIR), ".pdf"),
                 canvases: list_files(&dir, ".canvas"),
+                decks: list_files(&dir, ".cards"),
                 name,
             })
         })
@@ -507,6 +514,43 @@ pub fn rename_canvas(state: State<VaultState>, notebook: String, old: String, ne
 #[tauri::command]
 pub fn delete_canvas(state: State<VaultState>, notebook: String, canvas: String) -> Res<()> {
     trash::delete(canvas_path(&state, &notebook, &canvas)?).map_err(err)
+}
+
+// ---------- flashcard decks ----------
+
+#[tauri::command]
+pub fn read_deck(state: State<VaultState>, notebook: String, deck: String) -> Res<String> {
+    fs::read_to_string(deck_path(&state, &notebook, &deck)?).map_err(err)
+}
+
+#[tauri::command]
+pub fn write_deck(state: State<VaultState>, notebook: String, deck: String, content: String) -> Res<()> {
+    atomic_write(&deck_path(&state, &notebook, &deck)?, content.as_bytes())
+}
+
+#[tauri::command]
+pub fn create_deck(state: State<VaultState>, notebook: String, name: String, content: Option<String>) -> Res<String> {
+    let dir = notebook_dir(&state, &notebook)?;
+    let base = check_name(&name)?.to_string();
+    let file = unique_name(&base, ".cards", |n| dir.join(n).exists());
+    let final_name = file[..file.len() - 6].to_string();
+    atomic_write(&dir.join(&file), content.unwrap_or_default().as_bytes())?;
+    Ok(final_name)
+}
+
+#[tauri::command]
+pub fn rename_deck(state: State<VaultState>, notebook: String, old: String, new: String) -> Res<()> {
+    let from = deck_path(&state, &notebook, &old)?;
+    let to = deck_path(&state, &notebook, &new)?;
+    if to.exists() && !old.eq_ignore_ascii_case(&new) {
+        return Err(format!("A deck named \"{new}\" already exists"));
+    }
+    fs::rename(from, to).map_err(err)
+}
+
+#[tauri::command]
+pub fn delete_deck(state: State<VaultState>, notebook: String, deck: String) -> Res<()> {
+    trash::delete(deck_path(&state, &notebook, &deck)?).map_err(err)
 }
 
 // ---------- agent guide ----------

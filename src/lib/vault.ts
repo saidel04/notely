@@ -10,6 +10,8 @@ export interface Notebook {
   notes: FileMeta[];
   pdfs: FileMeta[];
   canvases: FileMeta[];
+  /** Flashcard decks (`.cards` files). */
+  decks: FileMeta[];
 }
 
 export const vaultApi = {
@@ -37,6 +39,15 @@ export const vaultApi = {
   renameCanvas: (notebook: string, old: string, next: string) =>
     invoke<void>("rename_canvas", { notebook, old, new: next }),
   deleteCanvas: (notebook: string, canvas: string) => invoke<void>("delete_canvas", { notebook, canvas }),
+  readDeck: (notebook: string, deck: string) => invoke<string>("read_deck", { notebook, deck }),
+  writeDeck: (notebook: string, deck: string, content: string) =>
+    invoke<void>("write_deck", { notebook, deck, content }),
+  createDeck: (notebook: string, name: string, content?: string) =>
+    invoke<string>("create_deck", { notebook, name, content }),
+  renameDeck: (notebook: string, old: string, next: string) =>
+    invoke<void>("rename_deck", { notebook, old, new: next }),
+  deleteDeck: (notebook: string, deck: string) => invoke<void>("delete_deck", { notebook, deck }),
+
   writeAgentGuide: (content: string) => invoke<boolean>("write_agent_guide", { content }),
 
   importPdf: (notebook: string, source: string) => invoke<string>("import_pdf", { notebook, source }),

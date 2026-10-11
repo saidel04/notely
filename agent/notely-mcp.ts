@@ -25,6 +25,7 @@ import {
   parseCanvas,
   serializeCanvas,
 } from "../src/lib/canvas";
+import { appendCards, cardLine, parseDeck } from "../src/lib/flashcards";
 import { formatLink, parseLinks, rewriteLinks, sameName } from "../src/lib/links";
 import { tagsIn } from "../src/lib/tags";
 import { buildPageText, findInPages, snippet } from "../src/lib/pdfText";
@@ -87,6 +88,7 @@ function notebookDir(nb: string, mustExist = true) {
 const stripExt = (name: string, ext: string) => (name.toLowerCase().endsWith(ext) ? name.slice(0, -ext.length) : name);
 const notePath = (nb: string, note: string) => path.join(notebookDir(nb), `${checkName(stripExt(note, ".md"), "note name")}.md`);
 const canvasPath = (nb: string, c: string) => path.join(notebookDir(nb), `${checkName(stripExt(c, ".canvas"), "canvas name")}.canvas`);
+const deckPath = (nb: string, d: string) => path.join(notebookDir(nb), `${checkName(stripExt(d, ".cards"), "deck name")}.cards`);
 
 function atomicWrite(file: string, content: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -114,7 +116,13 @@ function listNotebooks() {
     .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !e.name.startsWith("_"))
     .map((e) => {
       const dir = path.join(VAULT, e.name);
-      return { name: e.name, notes: listFiles(dir, ".md"), pdfs: listFiles(path.join(dir, "_pdfs"), ".pdf"), canvases: listFiles(dir, ".canvas") };
+      return {
+        name: e.name,
+        notes: listFiles(dir, ".md"),
+        pdfs: listFiles(path.join(dir, "_pdfs"), ".pdf"),
+        canvases: listFiles(dir, ".canvas"),
+        decks: listFiles(dir, ".cards"),
+      };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -176,7 +184,7 @@ const server = new McpServer(
   {
     instructions:
       `Tools for the Notely vault at ${VAULT}. Notebooks contain Markdown notes, PDFs (with highlights) and ` +
-      "JSON Canvas diagrams. Link with [[Note]], [[file.pdf#page=3]], [[file.pdf#hl-id]], [[Name.canvas]]; embed diagrams with ![[Name.canvas]] " +
+      "JSON Canvas diagrams and .cards flashcard decks. Link with [[Note]], [[file.pdf#page=3]], [[file.pdf#hl-id]], [[Name.canvas]]; embed diagrams with ![[Name.canvas]] " +
       "on their own line. Call get_guide once for the full format. Changes appear live in the app.",
   },
 );
@@ -198,7 +206,7 @@ const notebookArg = z.string().describe("Notebook name (top-level folder of the 
 
 tool("get_guide", "The complete Notely vault format: layout, link syntax, canvas format and conventions. Read this first.", {}, () => AGENT_GUIDE);
 
-tool("list_notebooks", "List all notebooks with their notes, PDFs and canvases.", {}, () => ({ vault: VAULT, notebooks: listNotebooks() }));
+tool("list_notebooks", "List all notebooks with their notes, PDFs, canvases and flashcard decks.", {}, () => ({ vault: VAULT, notebooks: listNotebooks() }));
 
 tool("create_notebook", "Create a new, empty notebook.", { name: z.string().describe("Notebook name") }, ({ name }) => {
   const dir = notebookDir(name, false);
@@ -549,6 +557,46 @@ tool(
     if (relayout !== "none") data = autoLayout(data, { direction: relayout });
     atomicWrite(canvasPath(nb, name), serializeCanvas(data));
     return { updated: stripExt(name, ".canvas"), nodes: data.nodes.length, edges: data.edges.length };
+  },
+);
+
+// ----- flashcard decks -----
+
+tool(
+  "read_deck",
+  "Read a flashcard deck. Returns the file text and its parsed cards (plus any lines that aren't valid cards).",
+  { notebook: notebookArg, name: z.string().describe("Deck name (without .cards)") },
+  ({ notebook, name }) => {
+    const nb = path.basename(notebookDir(notebook));
+    const deck = resolveItem(listFiles(notebookDir(nb), ".cards"), stripExt(name, ".cards"), "deck", nb);
+    const text = fs.readFileSync(deckPath(nb, deck), "utf8");
+    return { deck, ...parseDeck(text), text };
+  },
+);
+
+tool(
+  "write_deck",
+  'Create or update a flashcard deck. Each card is one line, "Question: answer" — the reader studies them with spaced repetition. ' +
+    "mode: 'create' (fails if it exists), 'overwrite', or 'append' (adds the cards to the end).",
+  {
+    notebook: notebookArg,
+    name: z.string().describe("Deck name (without .cards)"),
+    cards: z
+      .array(z.object({ question: z.string(), answer: z.string() }))
+      .describe("One fact per card; keep questions short and answerable from memory"),
+    mode: z.enum(["create", "overwrite", "append"]).default("create"),
+    heading: z.string().optional().describe("A note to the reader, written as a # comment line above the cards"),
+  },
+  ({ notebook, name, cards, mode, heading }) => {
+    const nb = path.basename(notebookDir(notebook));
+    const file = deckPath(nb, name);
+    const exists = fs.existsSync(file);
+    if (exists && mode === "create") throw new UserError(`Deck "${name}" exists — use mode 'append' or 'overwrite'.`);
+    const lines = [...(heading ? [`# ${heading.replace(/\r?\n/g, " ")}`] : []), ...cards.map((c) => cardLine(c.question, c.answer))];
+    const body = mode === "append" && exists ? appendCards(fs.readFileSync(file, "utf8"), lines) : appendCards("", lines);
+    atomicWrite(file, body);
+    const deck = stripExt(name, ".cards");
+    return { saved: deck, cards: parseDeck(body).cards.length, added: cards.length, review: `Open "${deck}" in Notely's Flashcards section to study it.` };
   },
 );
 

@@ -2,11 +2,13 @@ import { create } from "zustand";
 import { AGENT_GUIDE } from "../lib/agentGuide";
 import { clearAssetUrls } from "../lib/assets";
 import { CanvasData, fileNodePath, fileNodeTarget, parseCanvas, serializeCanvas } from "../lib/canvas";
+import { NEW_DECK } from "../lib/flashcards";
 import { rewriteLinks, rewriteNotebookPrefix, sameName } from "../lib/links";
 import { hasTag, renameTag, tagKey, tagsIn, validateTag } from "../lib/tags";
 import { settings } from "../lib/settings";
 import { errorMessage, Notebook, validateName, vaultApi } from "../lib/vault";
 import { flushCanvases, useCanvases } from "./canvasStore";
+import { flushDecks, useDecks } from "./deckStore";
 import { linkIndex } from "./linkIndex";
 import { useUi } from "./uiStore";
 import { useWorkspace } from "./workspaceStore";
@@ -41,6 +43,10 @@ interface VaultStore {
   createCanvas(name?: string, content?: string): Promise<string | null>;
   renameCanvas(old: string, next: string): Promise<boolean>;
   deleteCanvas(name: string): Promise<void>;
+
+  createDeck(name?: string, content?: string): Promise<string | null>;
+  renameDeck(old: string, next: string): Promise<boolean>;
+  deleteDeck(name: string): Promise<void>;
 
   /** Renames a #tag (and its nested tags) in every note and canvas of the vault; onto an existing tag, merges them. */
   renameTag(old: string, next: string): Promise<void>;
@@ -92,7 +98,7 @@ export const noteSaver = {
     const all = [...pending.values()];
     pending.clear();
     all.forEach((p) => window.clearTimeout(p.timer));
-    await Promise.all([...all.map(writeNow), flushCanvases()]);
+    await Promise.all([...all.map(writeNow), flushCanvases(), flushDecks()]);
   },
   isPending: (notebook: string, note: string) => pending.has(key(notebook, note)),
   isOwnWrite: (notebook: string, note: string, content: string) =>
@@ -205,6 +211,7 @@ export const useVault = create<VaultStore>((set, get) => ({
     );
     if (get().activeNotebook === nbName) set({ contents: next });
     await useCanvases.getState().sync(nbName, nb.canvases);
+    await useDecks.getState().sync(nbName, nb.decks);
   },
 
   // ----- notebooks -----
@@ -429,6 +436,62 @@ export const useVault = create<VaultStore>((set, get) => ({
           await useCanvases.getState().sync(nb, findNotebook(nb)?.canvases ?? [], true);
           useWorkspace.getState().open({ kind: "canvas", name: restored });
         }
+      });
+    } catch (e) {
+      fail(e);
+    }
+  },
+
+  // ----- flashcard decks -----
+
+  async createDeck(name = "Untitled deck", content = NEW_DECK) {
+    const nb = get().activeNotebook;
+    if (!nb) return null;
+    try {
+      const created = await vaultApi.createDeck(nb, name.trim(), content);
+      // Show the new deck right away rather than waiting for the next sync.
+      useDecks.setState((s) => (s.notebook === nb ? { text: { ...s.text, [created]: content } } : s));
+      await get().refresh();
+      return created;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  },
+
+  async renameDeck(old, next) {
+    const nb = get().activeNotebook;
+    next = next.trim().replace(/\.cards$/i, "");
+    if (!nb || old === next) return true;
+    const invalid = validateName(next);
+    if (invalid) return toast(invalid, "error"), false;
+    try {
+      await noteSaver.flushAll();
+      await vaultApi.renameDeck(nb, old, next);
+      useDecks.getState().rename(old, next);
+      useWorkspace.getState().renameItem("deck", old, next);
+      await get().refresh();
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  },
+
+  async deleteDeck(name) {
+    const nb = get().activeNotebook;
+    if (!nb) return;
+    try {
+      await flushDecks();
+      const content = useDecks.getState().text[name] ?? (await vaultApi.readDeck(nb, name).catch(() => undefined));
+      useDecks.getState().remove(name);
+      await vaultApi.deleteDeck(nb, name);
+      useWorkspace.getState().removeItem("deck", name);
+      await get().refresh();
+      offerUndo(`Deleted “${name}”`, async () => {
+        if (get().activeNotebook !== nb) await get().setActiveNotebook(nb);
+        const restored = await get().createDeck(name, content);
+        if (restored) useWorkspace.getState().open({ kind: "deck", name: restored });
       });
     } catch (e) {
       fail(e);

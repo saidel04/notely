@@ -1,31 +1,24 @@
-import { BookOpen, GraduationCap, Loader2, X } from "lucide-react";
+import { GraduationCap, Layers, Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildQueue, deckStats, formatInterval, Grade, GRADES, newCard, previewIntervals } from "../../lib/srs";
 import { Flashcard, useDeck } from "../../store/deck";
 import { useReview } from "../../store/reviewStore";
 import { useUi } from "../../store/uiStore";
 import { useVault } from "../../store/vaultStore";
-import { nextNonce, useWorkspace } from "../../store/workspaceStore";
+import { useWorkspace } from "../../store/workspaceStore";
 
 const NEW_PER_SESSION = 20;
 const LABEL: Record<Grade, string> = { again: "Again", hard: "Hard", good: "Good", easy: "Easy" };
-const pdfTitle = (pdf: string) => pdf.replace(/\.pdf$/i, "");
-
-/** The first few words of a passage, as a recall cue for cards without a question. */
-function cue(text: string) {
-  const words = text.trim().split(/\s+/);
-  return words.length <= 5 ? text.trim() : `${words.slice(0, 5).join(" ")} …`;
-}
 
 /**
- * Flashcard review: each highlight is a card. A highlight's comment is the
- * question and the passage is the answer; highlights without a comment ask you
- * to complete the passage from its first words. Scheduled with spaced repetition.
+ * Flashcard review: each line of a deck file (`Question: answer`) is a card.
+ * Click the card — or press Space — to flip it, then grade how well you knew
+ * it; spaced repetition decides when it comes back.
  */
 export default function ReviewPanel() {
   const scope = useUi((s) => s.review);
   const notebook = useVault((s) => s.activeNotebook);
-  const { cards, loaded } = useDeck(notebook, scope?.pdf ?? null);
+  const { cards, loaded } = useDeck(notebook, scope?.deck ?? null);
   const states = useReview((s) => s.states);
   const progressLoaded = useReview((s) => s.loaded && s.notebook === notebook);
 
@@ -52,9 +45,9 @@ export default function ReviewPanel() {
     setShown(false);
   };
 
-  const openSource = (c: Flashcard) => {
+  const openDeck = (c: Flashcard) => {
     close();
-    useWorkspace.getState().open({ kind: "pdf", name: c.pdf, target: { page: c.hl.page, highlightId: c.hl.id, nonce: nextNonce() } });
+    useWorkspace.getState().open({ kind: "deck", name: c.deck });
   };
 
   useEffect(() => {
@@ -93,7 +86,7 @@ export default function ReviewPanel() {
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-ink">Review</div>
-            <div className="truncate text-[12px] text-faint">{scope?.pdf ? pdfTitle(scope.pdf) : `All PDFs in ${notebook}`}</div>
+            <div className="truncate text-[12px] text-faint">{scope?.deck ?? `All decks in ${notebook}`}</div>
           </div>
           {card && <span className="text-[12px] text-muted tabular-nums">{left} left</span>}
           <button onClick={close} aria-label="Close review" className="rounded-md p-1 text-faint hover:bg-hover hover:text-ink">
@@ -107,15 +100,16 @@ export default function ReviewPanel() {
               <Loader2 className="animate-spin" size={20} />
             </div>
           ) : cards.length === 0 ? (
-            <Empty title="No highlights to review yet">
-              Highlight passages in a PDF and they become flashcards. Add a comment to a highlight to turn it into a question.
+            <Empty title="No flashcards yet">
+              Make a deck in the Flashcards section of the sidebar and write one card per line, as{" "}
+              <code className="text-muted">Question: answer</code>.
             </Empty>
           ) : !card ? (
             <Empty title={reviewed ? `Session complete — ${reviewed} card${reviewed === 1 ? "" : "s"} reviewed` : "All caught up"}>
-              {nextDue || "Nothing is due."} New highlights join your next session automatically.
+              {nextDue || "Nothing is due."} Cards you add to a deck join your next session automatically.
             </Empty>
           ) : (
-            <CardView card={card} shown={shown} onOpen={() => openSource(card)} />
+            <CardView card={card} shown={shown} onFlip={() => setShown(true)} onOpenDeck={() => openDeck(card)} />
           )}
         </div>
 
@@ -154,38 +148,48 @@ export default function ReviewPanel() {
   );
 }
 
-function CardView({ card, shown, onOpen }: { card: Flashcard; shown: boolean; onOpen: () => void }) {
-  const { hl, pdf } = card;
-  const question = hl.comment?.trim();
+/** The card under review: click it to turn it over. */
+function CardView({
+  card,
+  shown,
+  onFlip,
+  onOpenDeck,
+}: {
+  card: Flashcard;
+  shown: boolean;
+  onFlip: () => void;
+  onOpenDeck: () => void;
+}) {
   return (
     <div>
-      <div className="mb-3 text-[11.5px] font-medium tracking-wide text-faint uppercase">
-        {question ? "Question" : "Complete the passage"}
-      </div>
-      {question ? (
-        <div className="text-[19px] leading-snug font-medium text-ink">{question}</div>
-      ) : (
-        <div className="text-[18px] leading-relaxed text-ink" style={{ fontFamily: "var(--font-serif)" }}>
-          “{cue(hl.text)}”
-        </div>
-      )}
-      <div className="mt-2 text-[12px] text-faint">
-        {pdfTitle(pdf)} · p. {hl.page}
-      </div>
+      <button
+        onClick={onFlip}
+        disabled={shown}
+        aria-label={shown ? card.question : `${card.question} — click to show the answer`}
+        className={`card-flip card-roomy block h-[190px] w-full text-left ${shown ? "cursor-default" : ""}`}
+        data-flipped={shown || undefined}
+      >
+        <span className="card-flip-inner">
+          <span className="card-face">
+            <span className="text-[10.5px] font-medium tracking-wide text-faint uppercase">Question</span>
+            <span className="card-text flex items-center text-[19px] leading-snug font-medium text-ink">{card.question}</span>
+            <span className="text-[11.5px] text-faint">Click the card to flip it</span>
+          </span>
+          <span className="card-face card-back">
+            <span className="text-[10.5px] font-medium tracking-wide text-accent uppercase">Answer</span>
+            <span
+              className="card-text flex items-center text-[18px] leading-relaxed text-ink"
+              style={{ fontFamily: "var(--font-serif)" }}
+            >
+              {card.answer}
+            </span>
+          </span>
+        </span>
+      </button>
 
-      {shown && (
-        <div className="animate-fade mt-6 border-t border-line pt-5">
-          <blockquote
-            className={`border-l-[3px] pl-4 text-[16px] leading-relaxed text-ink hl-border-${hl.color}`}
-            style={{ fontFamily: "var(--font-serif)" }}
-          >
-            {hl.text}
-          </blockquote>
-          <button onClick={onOpen} className="mt-3 flex items-center gap-1.5 text-[12.5px] text-accent hover:underline">
-            <BookOpen size={13} /> Open on p. {hl.page}
-          </button>
-        </div>
-      )}
+      <button onClick={onOpenDeck} className="mt-3 flex items-center gap-1.5 text-[12.5px] text-accent hover:underline">
+        <Layers size={13} /> {card.deck} · line {card.line}
+      </button>
     </div>
   );
 }

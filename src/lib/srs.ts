@@ -1,4 +1,4 @@
-// Spaced repetition for flashcards made from highlights. A small SM-2 variant
+// Spaced repetition for flashcards. A small SM-2 variant
 // (the algorithm behind Anki/SuperMemo): each card keeps an ease factor and an
 // interval that grows when you remember it and resets when you don't.
 // Pure logic only — the review panel and its storage live elsewhere.
@@ -64,9 +64,9 @@ export function previewIntervals(s: CardState, now: number): Record<Grade, strin
 }
 
 export interface DeckCard {
-  /** The highlight id — stable across PDF renames. */
+  /** Stable identity, so a card keeps its schedule when its file is edited. */
   id: string;
-  /** For ordering new cards: PDF name, then page. */
+  /** For ordering new cards: the file it came from, then its place in it. */
   order: [string, number];
 }
 

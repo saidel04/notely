@@ -36,8 +36,8 @@ interface UiStore {
   agentPanel: boolean;
   /** Sidebar shows only notes/canvases with this tag. */
   tagFilter: string | null;
-  /** Flashcard review session: all PDFs in the notebook (pdf null) or one PDF. */
-  review: { pdf: string | null } | null;
+  /** Flashcard review session: every deck in the notebook (deck null) or one deck. */
+  review: { deck: string | null } | null;
   /** Version history panel for a note. */
   history: { note: string } | null;
   /** The tab being dragged, so the workspace can offer to snap it left or right. */
