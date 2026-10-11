@@ -1,4 +1,25 @@
+import type { Region } from "../../lib/figure";
 import { Rect } from "../../store/highlightStore";
+import type { PDFDocumentProxy } from "./pdfjs";
+
+/**
+ * Renders just `region` of a page to a PNG at `scale` (in its original colors,
+ * whatever the on-screen page theme), by shifting the page so the region
+ * lands at the canvas origin.
+ */
+export async function renderRegion(doc: PDFDocumentProxy, region: Region, scale: number): Promise<Blob> {
+  const page = await doc.getPage(region.page);
+  const viewport = page.getViewport({ scale });
+  const x = Math.floor(region.x * viewport.width);
+  const y = Math.floor(region.y * viewport.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(region.w * viewport.width));
+  canvas.height = Math.max(1, Math.ceil(region.h * viewport.height));
+  await page.render({ canvas, viewport, transform: [1, 0, 0, 1, -x, -y] }).promise;
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't create the image"))), "image/png"),
+  );
+}
 
 /**
  * Turns the current DOM selection into page-normalized rects. Returns null if

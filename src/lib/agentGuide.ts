@@ -1,7 +1,7 @@
 // The vault format, written for AI agents. Notely writes it to <vault>/AGENTS.md
 // and the MCP server returns it from `get_guide`. Bump the version when it changes.
 
-export const AGENT_GUIDE_VERSION = 3;
+export const AGENT_GUIDE_VERSION = 6;
 
 export const AGENT_GUIDE = `<!-- notely:generated v${AGENT_GUIDE_VERSION} — Notely keeps this file up to date. Delete this line to stop it. -->
 # Notely vault — guide for AI agents
@@ -16,11 +16,15 @@ otherwise edit the files directly following the rules below.
 \`\`\`
 <vault>/
   AGENTS.md                      ← this guide
+  _templates/<name>.md           ← note templates ({{title}}, {{date}}, {{cursor}}…)
   <Notebook>/                    ← a notebook is a top-level folder
     <Note name>.md               ← a note (the file name is its title)
     <Canvas name>.canvas         ← a diagram (JSON Canvas)
     _pdfs/<file>.pdf             ← PDFs imported into the notebook
+    _assets/<image>.png          ← images shown in notes
     .notely/highlights/<file>.pdf.json   ← PDF highlights (read-only for agents)
+    .notely/review.json          ← the reader's flashcard progress; don't touch
+    .notely/history/<note>/…     ← earlier versions of notes (kept by the app)
     .notely/cache/…              ← app caches; ignore
 \`\`\`
 
@@ -43,6 +47,8 @@ Links resolve within the same notebook unless prefixed with another notebook's n
 | \`[[Diagram.canvas]]\` | link to a canvas |
 | \`[[Other notebook/Note]]\` | anything in **another notebook**: prefix the target with \`Notebook/\` |
 | \`![[Diagram.canvas]]\` | **embed** a canvas preview — put it on its own line |
+| \`![alt text](_assets/figure.png)\` | an **image** from the notebook's \`_assets/\` folder — on its own line (no spaces in the file name) |
+| \`![Paper, p. 4](_assets/fig.png "[[Paper.pdf#page=4]]")\` | a **figure from a PDF**: the image's title holds the link to its page; clicking the image opens it |
 
 Any link can carry its own text, so it reads as part of a sentence:
 \`The defenders were [[siege.pdf#hl-ab12cd|badly outnumbered]], as [[Logistics|supply notes]] explain.\`
@@ -72,9 +78,12 @@ Reuse existing tags (MCP \`list_tags\`) rather than inventing near-duplicates.
 }
 \`\`\`
 
-- Node \`type\`: \`text\` (Markdown text), \`file\` (card for a note/PDF/canvas; path is
-  vault-relative, e.g. \`Notebook/Note.md\` or \`Notebook/_pdfs/x.pdf\`), \`link\` (\`url\`), \`group\` (\`label\`; a box around other nodes).
-- Notely extension: text nodes may set \`"shape"\`: \`rounded\` (default), \`rectangle\`, \`ellipse\`, \`diamond\`.
+- Node \`type\`: \`text\` (Markdown text), \`file\` (card for a note/PDF/canvas/image; path is
+  vault-relative, e.g. \`Notebook/Note.md\`, \`Notebook/_pdfs/x.pdf\` or \`Notebook/_assets/diagram.png\`), \`link\` (\`url\`), \`group\` (\`label\`; a box around other nodes).
+- A PDF card can point at a page, highlight or bookmark with \`"subpath"\`: \`"#page=12"\`, \`"#hl-ab12cd"\`, \`"#bm-ab12cd"\`.
+- Notely extensions: text nodes may set \`"shape"\`: \`rounded\` (default), \`rectangle\`, \`ellipse\`, \`diamond\`.
+  Freehand pen strokes are \`"type": "drawing"\` nodes with \`points\` (flat \`[x0,y0,x1,y1,…]\` relative to the node,
+  drawn at \`viewWidth\` × \`viewHeight\`) and an optional \`strokeWidth\` — leave them as they are.
 - \`color\`: \`"1"\` red, \`"2"\` orange, \`"3"\` yellow, \`"4"\` green, \`"5"\` cyan, \`"6"\` purple, or \`"#rrggbb"\`.
 - Edges: \`fromSide\`/\`toSide\` (\`top\`/\`right\`/\`bottom\`/\`left\`) are optional; \`toEnd\` defaults to \`arrow\`, \`fromEnd\` to \`none\`; optional \`label\`.
 - **You may omit \`x\`, \`y\`, \`width\`, \`height\`** (and even \`id\` on edges): Notely sizes the

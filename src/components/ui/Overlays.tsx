@@ -65,11 +65,19 @@ export function Toasts() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`animate-pop rounded-full border border-line bg-surface px-4 py-2 text-[12.5px] shadow-pop ${
-            t.tone === "error" ? "text-danger" : "text-ink"
-          }`}
+          className={`animate-pop flex items-center gap-3 rounded-full border border-line bg-surface py-2 shadow-pop ${
+            t.action ? "pointer-events-auto pr-1.5 pl-4" : "px-4"
+          } text-[12.5px] ${t.tone === "error" ? "text-danger" : "text-ink"}`}
         >
-          {t.message}
+          <span>{t.message}</span>
+          {t.action && (
+            <button
+              onClick={t.action.run}
+              className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white hover:opacity-90"
+            >
+              {t.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

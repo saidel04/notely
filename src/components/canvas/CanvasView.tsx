@@ -1,16 +1,20 @@
 import {
   ArrowRight,
-  BookOpen,
   Circle,
   Diamond,
+  Download,
+  Eraser,
   FileText,
   Group as GroupIcon,
   Hand,
+  ImagePlus,
   LayoutGrid,
+  Link2,
   Maximize2,
   Minus,
   MousePointer2,
   Network,
+  PenLine,
   Plus,
   Redo2,
   RectangleHorizontal,
@@ -18,6 +22,7 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   autoLayout,
@@ -36,18 +41,25 @@ import {
   Side,
   sizeFor,
 } from "../../lib/canvas";
+import { assetUrl, saveImageFile } from "../../lib/assets";
 import { DraggedQuote, ITEM_MIME, QUOTE_MIME } from "../../lib/dragQuote";
+import { canvasDrops } from "../../lib/editorRegistry";
+import { isImagePath, pixelDensity } from "../../lib/images";
+import { strokeNode } from "../../lib/ink";
+import { LinkTarget } from "../../lib/linkTargets";
 import { formatLink, parseLinks, qualify } from "../../lib/links";
+import { errorMessage, vaultApi } from "../../lib/vault";
 import { followLink } from "../../lib/navigate";
 import { settings, setSettingSoon } from "../../lib/settings";
+import { canvasHistory } from "../../lib/canvasHistory";
 import { useCanvases } from "../../store/canvasStore";
 import { useUi } from "../../store/uiStore";
-import { useVault } from "../../store/vaultStore";
 import { PaneIndex } from "../../store/workspaceStore";
-import { Floating } from "../ui/Menu";
+import { LinkPicker } from "../editor/LinkPicker";
+import { Menu } from "../ui/Menu";
 import { CanvasScene } from "./CanvasScene";
 
-type Tool = "select" | "hand" | Shape | "group";
+type Tool = "select" | "hand" | Shape | "group" | "pen" | "eraser";
 interface View {
   x: number;
   y: number;
@@ -65,7 +77,23 @@ type Drag =
   | { kind: "resize"; id: string; corner: Corner; orig: CanvasNode; snapshot: CanvasData }
   | { kind: "connect"; from: string; side: Side; snapshot: CanvasData }
   | { kind: "marquee"; start: Pt; additive: boolean }
-  | { kind: "create"; tool: Shape | "group"; start: Pt };
+  | { kind: "create"; tool: Shape | "group"; start: Pt }
+  | { kind: "draw"; points: Pt[] }
+  | { kind: "erase"; snapshot: CanvasData; erased: boolean };
+
+/** Pen sizes: fine, medium, bold. */
+const PEN_WIDTHS = [2, 4, 8];
+/** Widest an image is placed (it can be resized afterwards). */
+const MAX_IMAGE_WIDTH = 480;
+
+/** Where the link picker is open, and what picking does. */
+type Picking =
+  | { mode: "card"; at: Pt }
+  | { mode: "link"; at: Pt; node: string }
+  | { mode: "inline"; at: Pt; node: string; from: number; to: number };
+
+/** Link text sits inside `[[…|text]]`, which can't hold brackets, pipes or newlines. */
+const cleanAlias = (s: string) => s.replace(/[[\]|]/g, "").replace(/\s+/g, " ").trim();
 
 const SIDES: Side[] = ["top", "right", "bottom", "left"];
 const GRID = 10;
@@ -107,14 +135,18 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
   const [hover, setHover] = useState<string | null>(null);
   const [pending, setPending] = useState<{ from: CanvasNode; fromSide: Side; to: Pt } | null>(null);
   const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
-  const [cardMenu, setCardMenu] = useState<{ x: number; y: number } | null>(null);
+  const [picking, setPicking] = useState<Picking | null>(null);
+  const [exportMenu, setExportMenu] = useState<Pt | null>(null);
   const [space, setSpace] = useState(false);
+  const [pen, setPen] = useState<{ color?: string; width: number }>({ width: PEN_WIDTHS[1] });
+  const [ink, setInk] = useState<Pt[] | null>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
   const drag = useRef<Drag | null>(null);
   // Mirrors drag.current for rendering (refs don't re-render).
   const [dragKind, setDragKind] = useState<Drag["kind"] | null>(null);
-  const undo = useRef<CanvasData[]>([]);
-  const redo = useRef<CanvasData[]>([]);
   const editSnapshot = useRef<CanvasData | null>(null);
+  // Node id currently being created (so its text becomes part of one undo step).
+  const creating = useRef<string | null>(null);
   const viewKey = `cview:${notebook}/${name}`;
 
   const dataRef = useRef(data);
@@ -125,24 +157,20 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
   const live = useCallback((next: CanvasData) => store.set(name, next), [name, store]);
   const commit = useCallback(
     (next: CanvasData, snapshot: CanvasData = dataRef.current) => {
-      undo.current.push(snapshot);
-      if (undo.current.length > 200) undo.current.shift();
-      redo.current = [];
+      canvasHistory.record(notebook, name, snapshot, next);
       store.set(name, next);
     },
-    [name, store],
+    [notebook, name, store],
   );
+  // History lives outside the component (it survives closing the canvas) and
+  // undoes per element, so edits made meanwhile by an agent are kept.
   const doUndo = () => {
-    const prev = undo.current.pop();
-    if (!prev) return;
-    redo.current.push(dataRef.current);
-    store.set(name, prev);
+    const prev = canvasHistory.undo(notebook, name, dataRef.current);
+    if (prev) store.set(name, prev);
   };
   const doRedo = () => {
-    const next = redo.current.pop();
-    if (!next) return;
-    undo.current.push(dataRef.current);
-    store.set(name, next);
+    const next = canvasHistory.redo(notebook, name, dataRef.current);
+    if (next) store.set(name, next);
   };
   const patchNode = (id: string, patch: Partial<CanvasNode>, d = dataRef.current): CanvasData => ({
     ...d,
@@ -209,12 +237,18 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       const from = d.nodes.find((n) => n.id === opts.connectFrom!.id)!;
       edges.push({ id: newId(), fromNode: from.id, fromSide: opts.connectFrom.side, toNode: node.id, toSide: sideNearest(node, center(from)), toEnd: "arrow" });
     }
-    commit({ nodes: [...d.nodes, node], edges }, opts.snapshot ?? d);
-    setSel({ nodes: new Set([node.id]), edges: new Set() });
+    const nextDoc = { nodes: [...d.nodes, node], edges };
     if (opts.edit) {
-      editSnapshot.current = null;
-      setEditing(node.id);
+      // Defer history: the add and any text typed into it commit as one step when
+      // editing ends (and the node is simply dropped if left empty).
+      editSnapshot.current = opts.snapshot ?? d;
+      creating.current = node.id;
+      live(nextDoc);
+    } else {
+      commit(nextDoc, opts.snapshot ?? d);
     }
+    setSel({ nodes: new Set([node.id]), edges: new Set() });
+    if (opts.edit) setEditing(node.id);
   };
 
   const newShape = (shape: Shape | "group", at: Pt, size?: { width: number; height: number }): CanvasNode => {
@@ -223,12 +257,148 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
     return shape === "group" ? { ...base, type: "group", label: "Group" } : { ...base, type: "text", text: "", shape };
   };
 
-  const addCard = (kind: "note" | "pdf" | "canvas", item: string, at?: Pt) => {
+  const viewCenter = () => {
     const el = host.current!.getBoundingClientRect();
-    const p = at ?? toWorld(el.left + el.width / 2, el.top + el.height / 2);
-    const size = kind === "note" ? { width: 300, height: 200 } : { width: 260, height: 90 };
-    addNode({ id: newId(), type: "file", file: fileNodePath(notebook, kind, item), x: snap(p.x - size.width / 2), y: snap(p.y - size.height / 2), ...size });
+    return toWorld(el.left + el.width / 2, el.top + el.height / 2);
   };
+
+  /** A card for a note, PDF or canvas — or, with a `#subpath`, a page, quote or bookmark in a PDF. */
+  const addCard = (kind: "note" | "pdf" | "canvas", item: string, at?: Pt, opts: { notebook?: string; subpath?: string } = {}) => {
+    const p = at ?? viewCenter();
+    const size = kind === "note" ? { width: 300, height: 200 } : opts.subpath ? { width: 280, height: 130 } : { width: 260, height: 90 };
+    addNode({
+      id: newId(),
+      type: "file",
+      file: fileNodePath(opts.notebook ?? notebook, kind, item),
+      ...(opts.subpath ? { subpath: opts.subpath } : {}),
+      x: snap(p.x - size.width / 2),
+      y: snap(p.y - size.height / 2),
+      ...size,
+    });
+  };
+
+  /** Image cards for files already in `_assets/`, placed side by side around `at`. */
+  const addImages = async (names: string[], at: Pt = viewCenter()) => {
+    const nodes: CanvasNode[] = [];
+    let x = at.x;
+    for (const file of names) {
+      // Natural size (halved for "@2x" figures), capped so big photos stay manageable.
+      const dims = await assetUrl(notebook, file)
+        .then((u) => new Promise<{ w: number; h: number }>((ok, fail) => {
+          const img = new Image();
+          img.onload = () => ok({ w: img.naturalWidth, h: img.naturalHeight });
+          img.onerror = fail;
+          img.src = u;
+        }))
+        .catch(() => ({ w: 320, h: 240 }));
+      const d = pixelDensity(file);
+      let width = Math.max(40, dims.w / d);
+      let height = Math.max(30, dims.h / d);
+      if (width > MAX_IMAGE_WIDTH) [width, height] = [MAX_IMAGE_WIDTH, (height * MAX_IMAGE_WIDTH) / width];
+      nodes.push({ id: newId(), type: "file", file: fileNodePath(notebook, "image", file), x: Math.round(x - (names.length === 1 ? width / 2 : 0)), y: Math.round(at.y - height / 2), width: Math.round(width), height: Math.round(height) });
+      x += width + 30;
+    }
+    if (!nodes.length) return;
+    const d = dataRef.current;
+    commit({ ...d, nodes: [...d.nodes, ...nodes] });
+    setSel({ nodes: new Set(nodes.map((n) => n.id)), edges: new Set() });
+    setTool("select");
+  };
+
+  const chooseImages = async () => {
+    const picked = await open({ multiple: true, title: "Add images", filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"] }] });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!paths.length) return;
+    try {
+      const names: string[] = [];
+      for (const p of paths) names.push(await vaultApi.importAsset(notebook, p));
+      await addImages(names);
+    } catch (e) {
+      useUi.getState().toast(errorMessage(e), "error");
+    }
+  };
+
+  // Images dropped from Explorer onto this canvas (routed here by the app's file-drop handler).
+  const addImagesRef = useRef(addImages);
+  addImagesRef.current = addImages;
+  const toWorldRef = useRef(toWorld);
+  toWorldRef.current = toWorld;
+  useEffect(() => {
+    const drop = async (paths: string[], at?: Pt) => {
+      try {
+        const names: string[] = [];
+        for (const p of paths.filter(isImagePath)) names.push(await vaultApi.importAsset(notebook, p));
+        await addImagesRef.current(names, at ? toWorldRef.current(at.x, at.y) : undefined);
+      } catch (e) {
+        useUi.getState().toast(errorMessage(e), "error");
+      }
+    };
+    canvasDrops.set(pane, drop);
+    return () => {
+      if (canvasDrops.get(pane) === drop) canvasDrops.delete(pane);
+    };
+  }, [notebook, pane]);
+
+  /** Pasted screenshots become image cards in the middle of the view. */
+  const onPaste = async (e: React.ClipboardEvent) => {
+    if ((e.target as HTMLElement).closest("textarea, input")) return;
+    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    try {
+      const names: string[] = [];
+      for (const f of files) names.push(await saveImageFile(notebook, f));
+      await addImages(names);
+    } catch (err) {
+      useUi.getState().toast(errorMessage(err), "error");
+    }
+  };
+
+  /** Picking from the link picker: a new card, a link on a box, or a link typed after `[[`. */
+  const onPicked = (t: LinkTarget) => {
+    const p = picking;
+    setPicking(null);
+    if (!p) return;
+    const target = t.target;
+    if (p.mode === "card") {
+      // Targets in other notebooks come as "Notebook/name".
+      const slash = target.indexOf("/");
+      const other = t.detail?.startsWith("in ") && slash > 0;
+      const nb = other ? target.slice(0, slash) : notebook;
+      const item = other ? target.slice(slash + 1) : target;
+      const kind = t.kind === "note" ? "note" : t.kind === "canvas" ? "canvas" : "pdf";
+      const itemName = kind === "canvas" ? item.replace(/\.canvas$/i, "") : item;
+      if (kind === "canvas" && itemName === name && nb === notebook) return;
+      addCard(kind, itemName, undefined, { notebook: nb, subpath: t.fragment ? `#${t.fragment}` : undefined });
+      return;
+    }
+    const n = dataRef.current.nodes.find((x) => x.id === p.node);
+    if (!n || n.type !== "text") return;
+    if (p.mode === "inline") {
+      const link = formatLink(target, t.fragment);
+      const text = n.text.slice(0, p.from) + link + n.text.slice(p.to);
+      live(patchNode(n.id, { text } as Partial<CanvasNode>));
+      requestAnimationFrame(() => {
+        const el = textarea.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(p.from + link.length, p.from + link.length);
+      });
+      return;
+    }
+    // Link a whole box: its words become the link's text (a box that's
+    // already one link is re-pointed; a long or multi-line box gets the link on a new line).
+    const existing = parseLinks(n.text);
+    const whole = existing.length === 1 && existing[0].from === 0 && existing[0].to === n.text.trim().length;
+    const words = whole ? (existing[0].alias ?? "") : n.text.trim();
+    const short = !words.includes("\n") && words.length <= 120;
+    const label = short ? cleanAlias(words) : "";
+    const link = formatLink(target, t.fragment, label || (whole ? null : t.label.slice(0, 60)) || null);
+    commit(patchNode(n.id, { text: short ? link : `${n.text.trimEnd()}\n\n${link}` } as Partial<CanvasNode>));
+  };
+
+  /** Opens the picker to link the selected box. */
+  const linkBox = (id: string, at: Pt) => setPicking({ mode: "link", node: id, at });
 
   const deleteSelection = () => {
     const d = dataRef.current;
@@ -264,10 +434,11 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
   const openFileNode = (n: CanvasNode) => {
     if (n.type !== "file") return;
     const t = fileNodeTarget(n.file, notebook);
-    if (!t) return;
+    if (!t || t.kind === "image") return;
     const name = t.kind === "canvas" ? `${t.name}.canvas` : t.name;
-    // Same path as clicking a link, so cards into other notebooks work too.
-    const link = parseLinks(formatLink(qualify(name, t.notebook, notebook)))[0];
+    // Same path as clicking a link, so cards into other notebooks (and a
+    // card's page or quote) work too.
+    const link = parseLinks(formatLink(qualify(name, t.notebook, notebook), n.subpath?.replace(/^#/, "") || null))[0];
     void followLink(link, pane, false);
   };
 
@@ -278,7 +449,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       const id = (el as Element).closest?.("[data-node]")?.getAttribute("data-node");
       if (id && id !== exclude) {
         const n = dataRef.current.nodes.find((x) => x.id === id);
-        if (n && n.type !== "group") return n;
+        if (n && n.type !== "group" && n.type !== "drawing") return n;
       }
     }
     return null;
@@ -326,6 +497,17 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       drag.current = { kind: "resize", id, corner: corner as Corner, orig, snapshot: d };
       return;
     }
+    if (tool === "pen") {
+      drag.current = { kind: "draw", points: [p] };
+      setInk([p]);
+      return;
+    }
+    if (tool === "eraser") {
+      const dr: Drag = { kind: "erase", snapshot: d, erased: false };
+      drag.current = dr;
+      eraseAt(dr, e.clientX, e.clientY);
+      return;
+    }
     if (tool !== "select") {
       drag.current = { kind: "create", tool, start: p };
       setMarquee({ a: p, b: p });
@@ -359,6 +541,22 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
     drag.current = { kind: "marquee", start: p, additive: e.shiftKey };
     if (!e.shiftKey) setSel({ nodes: new Set(), edges: new Set() });
     setMarquee({ a: p, b: p });
+  };
+
+  /** The eraser removes pen strokes it touches (only strokes, so boxes are safe). */
+  const eraseAt = (dr: Extract<Drag, { kind: "erase" }>, clientX: number, clientY: number) => {
+    const d = dataRef.current;
+    const hit = new Set<string>();
+    // A small square around the pointer, so quick sweeps don't skip strokes.
+    for (const [dx, dy] of [[0, 0], [-5, 0], [5, 0], [0, -5], [0, 5]]) {
+      for (const el of document.elementsFromPoint(clientX + dx, clientY + dy)) {
+        const id = el.closest?.("[data-node]")?.getAttribute("data-node");
+        if (id && d.nodes.find((n) => n.id === id)?.type === "drawing") hit.add(id);
+      }
+    }
+    if (!hit.size) return;
+    dr.erased = true;
+    live({ ...d, nodes: d.nodes.filter((n) => !hit.has(n.id)) });
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -396,6 +594,12 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
           y = Math.min(o.y + o.height - 30, snap(p.y));
           height = o.y + o.height - y;
         }
+        // Images keep their proportions (hold Shift to stretch).
+        if (o.type === "file" && fileNodeTarget(o.file, notebook)?.kind === "image" && !e.shiftKey) {
+          const ratio = o.width / o.height;
+          height = Math.max(20, Math.round(width / ratio));
+          if (dr.corner.includes("n")) y = o.y + o.height - height;
+        }
         live(patchNode(dr.id, { x, y, width, height }));
         break;
       }
@@ -408,6 +612,17 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       case "marquee":
       case "create":
         setMarquee((m) => (m ? { ...m, b: p } : m));
+        break;
+      case "draw": {
+        // Coalesced events keep fast strokes smooth.
+        const events = e.nativeEvent.getCoalescedEvents?.() ?? [];
+        const pts = events.length ? events.map((ev) => toWorld(ev.clientX, ev.clientY)) : [p];
+        dr.points.push(...pts);
+        setInk([...dr.points]);
+        break;
+      }
+      case "erase":
+        eraseAt(dr, e.clientX, e.clientY);
         break;
     }
   };
@@ -465,6 +680,16 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
         if (!e.shiftKey) setTool("select");
         break;
       }
+      case "draw": {
+        setInk(null);
+        // The pen stays active, so you can keep writing.
+        const node = strokeNode(dr.points, pen.width, pen.color, view.k);
+        if (node) commit({ ...d, nodes: [...d.nodes, node] });
+        break;
+      }
+      case "erase":
+        if (dr.erased) commit(d, dr.snapshot);
+        break;
     }
   };
 
@@ -473,6 +698,14 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
     const t = e.target as Element;
     const nodeId = t.closest("[data-node]")?.getAttribute("data-node");
     const edgeId = t.closest("[data-edge]")?.getAttribute("data-edge");
+    // Double-click a [[link]] in a box to follow it.
+    const wiki = t.closest("[data-link]");
+    if (wiki) {
+      const link = parseLinks(decodeURIComponent(wiki.getAttribute("data-link")!))[0];
+      if (link) void followLink(link, pane, e.ctrlKey || e.metaKey);
+      return;
+    }
+    if (tool === "pen" || tool === "eraser") return;
     if (nodeId) {
       const n = dataRef.current.nodes.find((x) => x.id === nodeId)!;
       if (n.type === "file") return openFileNode(n);
@@ -505,22 +738,41 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       const id = [...sel.nodes][0];
       const n = dataRef.current.nodes.find((x) => x.id === id);
       if (n?.type === "file") openFileNode(n);
-      else {
+      else if (n?.type === "text" || n?.type === "group") {
         editSnapshot.current = dataRef.current;
         setEditing(id);
       }
-    } else if (k.startsWith("arrow") && sel.nodes.size) {
-      const step = e.shiftKey ? GRID * 5 : GRID;
-      const dx = k === "arrowleft" ? -step : k === "arrowright" ? step : 0;
-      const dy = k === "arrowup" ? -step : k === "arrowdown" ? step : 0;
-      const d = dataRef.current;
-      commit({ ...d, nodes: d.nodes.map((n) => (sel.nodes.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n)) });
+    } else if (k.startsWith("arrow")) {
+      const nodes = dataRef.current.nodes;
+      if (!sel.nodes.size) {
+        // Nothing selected yet: an arrow key picks the first shape (keyboard entry).
+        if (!nodes.length) return;
+        setSel({ nodes: new Set([nodes[0].id]), edges: new Set() });
+      } else {
+        const step = e.shiftKey ? GRID * 5 : GRID;
+        const dx = k === "arrowleft" ? -step : k === "arrowright" ? step : 0;
+        const dy = k === "arrowup" ? -step : k === "arrowdown" ? step : 0;
+        const d = dataRef.current;
+        commit({ ...d, nodes: d.nodes.map((n) => (sel.nodes.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n)) });
+      }
+    } else if (k === "tab") {
+      // Cycle the selection through shapes. Only while something is selected, so
+      // Tab still moves focus out of the canvas when nothing is selected (Escape
+      // clears the selection) — no focus trap.
+      const nodes = dataRef.current.nodes;
+      if (!nodes.length || !sel.nodes.size) return;
+      const curr = nodes.findIndex((n) => sel.nodes.has(n.id));
+      const next = (curr + (e.shiftKey ? -1 : 1) + nodes.length) % nodes.length;
+      setSel({ nodes: new Set([nodes[next].id]), edges: new Set() });
     } else if (!mod && k === "v") setTool("select");
     else if (!mod && k === "h") setTool("hand");
     else if (!mod && k === "r") setTool("rounded");
     else if (!mod && k === "o") setTool("ellipse");
     else if (!mod && k === "d") setTool("diamond");
     else if (!mod && k === "g") setTool("group");
+    else if (!mod && k === "p") setTool("pen");
+    else if (!mod && k === "e") setTool("eraser");
+    else if (mod && e.shiftKey && k === "k" && selectedText) linkBox(selectedText.id, toolbarAnchor());
     else if (!mod && k === "0" && e.shiftKey) fit();
     else if (k === " ") setSpace(true);
     else return;
@@ -533,16 +785,19 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
     if (!editing) return;
     const n = dataRef.current.nodes.find((x) => x.id === editing);
     const snapshot = editSnapshot.current;
+    const wasNew = creating.current === editing;
     editSnapshot.current = null;
+    creating.current = null;
     setEditing(null);
     if (!n) return;
-    if (n.type === "text" && !n.text.trim() && snapshot === null) {
-      // A new node left empty: discard it (and the edge that created it).
+    if (n.type === "text" && !n.text.trim() && wasNew) {
+      // A new node left empty: drop it (and the edge that created it). Its add was
+      // never recorded, so there's nothing to undo.
       const d = dataRef.current;
       store.set(name, { nodes: d.nodes.filter((x) => x.id !== n.id), edges: d.edges.filter((x) => x.fromNode !== n.id && x.toNode !== n.id) });
-      undo.current.pop();
       return;
     }
+    // One step for an edit, or for a new node's whole creation (snapshot = the doc before it).
     if (snapshot) commit(dataRef.current, snapshot);
   };
 
@@ -569,6 +824,14 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
   };
 
   const selectedNode = sel.nodes.size === 1 ? data.nodes.find((n) => sel.nodes.has(n.id)) : null;
+  const selectedText = selectedNode?.type === "text" ? selectedNode : null;
+  /** Under the selected box, in window coordinates (where the link picker opens). */
+  const toolbarAnchor = (): Pt => {
+    const r = host.current!.getBoundingClientRect();
+    const b = selectionBox ?? { x: 0, y: 0, width: 0, height: 0 };
+    const p = { x: b.x * view.k + view.x, y: (b.y + b.height) * view.k + view.y };
+    return { x: r.left + Math.max(8, p.x), y: r.top + Math.min(r.height - 40, p.y + 10) };
+  };
   const selectedEdge = sel.edges.size === 1 && !sel.nodes.size ? data.edges.find((x) => sel.edges.has(x.id)) : null;
   const selectionBox = useMemo(() => {
     const nodes = data.nodes.filter((n) => sel.nodes.has(n.id));
@@ -585,14 +848,25 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
     );
   }
 
-  const cursor = space || tool === "hand" ? (dragKind === "pan" ? "grabbing" : "grab") : tool === "select" ? "default" : "crosshair";
+  const cursor =
+    space || tool === "hand"
+      ? dragKind === "pan"
+        ? "grabbing"
+        : "grab"
+      : tool === "select"
+        ? "default"
+        : tool === "eraser"
+          ? "cell"
+          : "crosshair";
   const toScreen = (p: Pt) => ({ x: p.x * view.k + view.x, y: p.y * view.k + view.y });
 
   return (
     <div
       ref={host}
       tabIndex={0}
-      className="cv relative h-full overflow-hidden outline-none select-none"
+      role="application"
+      aria-label={`Diagram canvas: ${name}. Press an arrow key to select a shape, Tab to move between shapes, Enter to edit, Delete to remove.`}
+      className="cv relative h-full overflow-hidden outline-none select-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
       style={{
         cursor,
         backgroundPosition: `${view.x}px ${view.y}px`,
@@ -606,6 +880,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
       onKeyUp={(e) => e.key === " " && setSpace(false)}
       onDragOver={(e) => (e.dataTransfer.types.includes(ITEM_MIME) || e.dataTransfer.types.includes(QUOTE_MIME)) && e.preventDefault()}
       onDrop={onDrop}
+      onPaste={(e) => void onPaste(e)}
       onContextMenu={(e) => e.preventDefault()}
     >
       <svg className="absolute inset-0 h-full w-full">
@@ -617,6 +892,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
             selectedEdges={sel.edges}
             editingId={editing}
             pendingEdge={pending}
+            pendingInk={ink ? { points: ink, color: pen.color, width: pen.width } : null}
             hoverId={hover}
             interactive
           />
@@ -624,7 +900,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
           {/* Resize handles + connection ports */}
           {selectedNode && !editing && <Handles node={selectedNode} k={view.k} />}
           {data.nodes
-            .filter((n) => n.type !== "group" && (n.id === hover || sel.nodes.has(n.id)) && tool === "select" && !editing)
+            .filter((n) => n.type !== "group" && n.type !== "drawing" && (n.id === hover || sel.nodes.has(n.id)) && tool === "select" && !editing)
             .map((n) => (
               <Ports key={n.id} node={n} k={view.k} />
             ))}
@@ -644,6 +920,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
           {editingNode && (
             <foreignObject x={editingNode.x} y={editingNode.y - (editingNode.type === "group" ? 30 : 0)} width={editingNode.width} height={editingNode.type === "group" ? 28 : editingNode.height}>
               <textarea
+                ref={textarea}
                 autoFocus
                 className={`cv-editor ${editingNode.type === "group" ? "cv-editor-group" : ""}`}
                 value={editingNode.type === "text" ? editingNode.text : editingNode.type === "group" ? (editingNode.label ?? "") : ""}
@@ -655,8 +932,14 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
                   // Grow the node to fit its text while typing.
                   const auto = sizeFor(v, editingNode.type === "text" ? editingNode.shape : undefined);
                   live(patchNode(editingNode.id, { text: v, height: Math.max(editingNode.height, Math.min(auto.height, 600)) } as Partial<CanvasNode>));
+                  // Typing "[[" opens the link picker; what's picked replaces the brackets.
+                  const caret = e.target.selectionStart;
+                  if (editingNode.type === "text" && v.slice(caret - 2, caret) === "[[" && v.length > editingNode.text.length) {
+                    const r = e.target.getBoundingClientRect();
+                    setPicking({ mode: "inline", node: editingNode.id, from: caret - 2, to: caret, at: { x: r.left, y: r.bottom + 6 } });
+                  }
                 }}
-                onBlur={finishEditing}
+                onBlur={() => picking?.mode !== "inline" && finishEditing()}
                 onKeyDown={(e) => {
                   if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || editingNode.type === "group"))) {
                     e.preventDefault();
@@ -696,14 +979,48 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
         <ToolBtn active={tool === "ellipse"} title="Ellipse (O)" onClick={() => setTool("ellipse")}><Circle size={15} /></ToolBtn>
         <ToolBtn active={tool === "diamond"} title="Decision diamond (D)" onClick={() => setTool("diamond")}><Diamond size={15} /></ToolBtn>
         <ToolBtn active={tool === "group"} title="Group (G)" onClick={() => setTool("group")}><GroupIcon size={15} /></ToolBtn>
-        <ToolBtn title="Add a note or PDF card" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setCardMenu({ x: r.left, y: r.bottom + 6 }); }}><FileText size={15} /></ToolBtn>
         <Divider />
-        <ToolBtn title="Undo (Ctrl+Z)" onClick={doUndo} disabled={!undo.current.length}><Undo2 size={15} /></ToolBtn>
-        <ToolBtn title="Redo (Ctrl+Shift+Z)" onClick={doRedo} disabled={!redo.current.length}><Redo2 size={15} /></ToolBtn>
+        <ToolBtn active={tool === "pen"} title="Pen (P) — draw freehand" onClick={() => setTool("pen")}><PenLine size={15} /></ToolBtn>
+        <ToolBtn active={tool === "eraser"} title="Eraser (E) — rub out pen strokes" onClick={() => setTool("eraser")}><Eraser size={15} /></ToolBtn>
+        <ToolBtn title="Add images (or paste / drop them here)" onClick={() => void chooseImages()}><ImagePlus size={15} /></ToolBtn>
+        <ToolBtn title="Add a card for a note, PDF page, quote or canvas" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setPicking({ mode: "card", at: { x: r.left, y: r.bottom + 6 } }); }}><FileText size={15} /></ToolBtn>
+        <Divider />
+        <ToolBtn title="Undo (Ctrl+Z)" onClick={doUndo} disabled={!canvasHistory.canUndo(notebook, name)}><Undo2 size={15} /></ToolBtn>
+        <ToolBtn title="Redo (Ctrl+Shift+Z)" onClick={doRedo} disabled={!canvasHistory.canRedo(notebook, name)}><Redo2 size={15} /></ToolBtn>
         <Divider />
         <ToolBtn title="Tidy layout — top to bottom" onClick={() => tidy("TB")}><Network size={15} /></ToolBtn>
         <ToolBtn title="Tidy layout — left to right" onClick={() => tidy("LR")}><LayoutGrid size={15} className="-rotate-90" /></ToolBtn>
+        <Divider />
+        <ToolBtn title="Export as PNG or SVG" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setExportMenu({ x: r.right - 200, y: r.bottom + 6 }); }}><Download size={15} /></ToolBtn>
       </div>
+
+      {/* Pen options */}
+      {tool === "pen" && (
+        <div className="cv-toolbar animate-pop absolute top-[58px] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-surface/95 p-1 shadow-pop backdrop-blur">
+          {SWATCHES.map((c) => (
+            <button
+              key={c ?? "ink"}
+              title={c ? "Pen color" : "Ink (follows the theme)"}
+              aria-label={c ? `Pen color ${c}` : "Ink color"}
+              onClick={() => setPen((p) => ({ ...p, color: c }))}
+              className={`size-[18px] rounded-full border ${pen.color === c ? "ring-2 ring-accent ring-offset-1 ring-offset-surface" : ""} ${c ? "border-black/10" : "border-line-strong bg-ink"}`}
+              style={c ? { background: PRESET_COLORS[c] } : undefined}
+            />
+          ))}
+          <Divider />
+          {PEN_WIDTHS.map((w) => (
+            <button
+              key={w}
+              title={w === PEN_WIDTHS[0] ? "Fine" : w === PEN_WIDTHS[1] ? "Medium" : "Bold"}
+              aria-label={`Pen size ${w}`}
+              onClick={() => setPen((p) => ({ ...p, width: w }))}
+              className={`flex size-7 items-center justify-center rounded-md ${pen.width === w ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"}`}
+            >
+              <span className="rounded-full bg-current" style={{ width: w + 2, height: w + 2 }} />
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Selection toolbar */}
       {(selectionBox || selectedEdge) && !editing && (!dragKind || dragKind === "marquee") && (
@@ -716,6 +1033,7 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
           color={selectedNode?.color ?? selectedEdge?.color}
           shape={selectedNode?.type === "text" ? (selectedNode.shape ?? "rounded") : undefined}
           edge={selectedEdge ?? undefined}
+          onLink={selectedText ? () => linkBox(selectedText.id, toolbarAnchor()) : undefined}
           onColor={(c) => {
             const d = dataRef.current;
             commit({
@@ -762,13 +1080,45 @@ export function CanvasView({ notebook, name, pane }: { notebook: string; name: s
             <div className="mt-1 text-[12.5px] leading-relaxed text-faint">
               Double-click to add a box · drag a box's edge dot to connect or grow a flowchart
               <br />
-              Drag notes and PDFs here from the sidebar
+              Drag notes and PDFs here from the sidebar · paste or drop images · P to draw
             </div>
           </div>
         </div>
       )}
 
-      {cardMenu && <CardMenu pos={cardMenu} notebook={notebook} self={name} onClose={() => setCardMenu(null)} onPick={(k, n) => (setCardMenu(null), addCard(k, n))} />}
+      {picking && (
+        <LinkPicker
+          notebook={notebook}
+          anchor={picking.at}
+          selectionText=""
+          heading={
+            picking.mode === "card"
+              ? "Add a card for…"
+              : picking.mode === "link"
+                ? "Link this box to…"
+                : "Insert a link to…"
+          }
+          onPick={onPicked}
+          onClose={() => {
+            const p = picking;
+            setPicking(null);
+            // Back to typing where the brackets were.
+            if (p.mode === "inline") requestAnimationFrame(() => textarea.current?.focus());
+          }}
+        />
+      )}
+
+      {exportMenu && (
+        <Menu
+          x={exportMenu.x}
+          y={exportMenu.y}
+          onClose={() => setExportMenu(null)}
+          items={[
+            { label: "Export as PNG image…", icon: <Download />, onSelect: () => void import("./canvasExport").then((m) => m.exportCanvas(dataRef.current, notebook, name, "png")) },
+            { label: "Export as SVG…", icon: <Download />, onSelect: () => void import("./canvasExport").then((m) => m.exportCanvas(dataRef.current, notebook, name, "svg")) },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -850,6 +1200,7 @@ function SelectionBar({
   color,
   shape,
   edge,
+  onLink,
   onColor,
   onShape,
   onArrows,
@@ -860,6 +1211,8 @@ function SelectionBar({
   color?: string;
   shape?: Shape;
   edge?: CanvasEdge;
+  /** Link the box to a note, PDF page, quote… (text boxes only). */
+  onLink?: () => void;
   onColor: (c: string | undefined) => void;
   onShape: (s: Shape) => void;
   onArrows: (fromEnd: "none" | "arrow", toEnd: "none" | "arrow") => void;
@@ -922,6 +1275,14 @@ function SelectionBar({
           </button>
         </>
       )}
+      {onLink && (
+        <>
+          <Divider />
+          <button title="Link to a note, PDF page or quote (Ctrl+Shift+K)" onClick={onLink} className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-ink">
+            <Link2 size={14} /> Link
+          </button>
+        </>
+      )}
       <Divider />
       <button title="Delete" onClick={onDelete} className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-danger">
         <Trash2 size={14} />
@@ -962,56 +1323,5 @@ function EdgeLabelInput({
       }}
       onPointerDown={(e) => e.stopPropagation()}
     />
-  );
-}
-
-function CardMenu({
-  pos,
-  notebook,
-  self,
-  onClose,
-  onPick,
-}: {
-  pos: Pt;
-  notebook: string;
-  self: string;
-  onClose: () => void;
-  onPick: (kind: "note" | "pdf" | "canvas", name: string) => void;
-}) {
-  const nb = useVault((s) => s.notebooks.find((n) => n.name === notebook));
-  const [q, setQ] = useState("");
-  const match = (s: string) => s.toLowerCase().includes(q.toLowerCase());
-  const items: { kind: "note" | "pdf" | "canvas"; name: string; icon: React.ReactNode; label: string }[] = [
-    ...(nb?.notes ?? []).map((n) => ({ kind: "note" as const, name: n.name, icon: <FileText size={14} />, label: n.name })),
-    ...(nb?.pdfs ?? []).map((p) => ({ kind: "pdf" as const, name: p.name, icon: <BookOpen size={14} />, label: p.name.replace(/\.pdf$/i, "") })),
-    ...(nb?.canvases ?? []).filter((c) => c.name !== self).map((c) => ({ kind: "canvas" as const, name: c.name, icon: <Network size={14} />, label: c.name })),
-  ].filter((i) => match(i.label));
-  return (
-    <Floating x={pos.x} y={pos.y} onClose={onClose} className="cv-floating w-[280px] p-1">
-      <input
-        autoFocus
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && items[0]) onPick(items[0].kind, items[0].name);
-          if (e.key === "Escape") onClose();
-        }}
-        placeholder="Add a card for…"
-        className="mb-1 w-full rounded-md bg-hover px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-faint"
-      />
-      <div className="max-h-[300px] overflow-y-auto">
-        {items.length === 0 && <div className="px-2.5 py-3 text-center text-[12.5px] text-faint">Nothing to add</div>}
-        {items.map((i) => (
-          <button
-            key={i.kind + i.name}
-            onClick={() => onPick(i.kind, i.name)}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-hover"
-          >
-            <span className="text-faint">{i.icon}</span>
-            <span className="truncate">{i.label}</span>
-          </button>
-        ))}
-      </div>
-    </Floating>
   );
 }

@@ -1,0 +1,41 @@
+name: Release
+
+# Push a version tag (e.g. `git tag v0.2.0 && git push --tags`) to build the
+# Windows installer, sign the update, and publish a GitHub release. Installed
+# copies of Notely find it through the release's latest.json and update themselves.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update so installed copies accept it (key made with `tauri signer generate`).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Notely ${{ github.ref_name }}
+          releaseBody: Download and run the setup file below. Installed copies of Notely update themselves.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true

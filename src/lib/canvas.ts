@@ -1,5 +1,7 @@
 // Canvas documents use the open JSON Canvas format (https://jsoncanvas.org),
-// with one optional extension: text nodes may carry a `shape`.
+// with two extensions: text nodes may carry a `shape`, and freehand pen
+// strokes are `drawing` nodes. Images are ordinary file nodes pointing into
+// a notebook's `_assets/` folder.
 // Pure logic only (no DOM), so the agent server can share it.
 
 export type Side = "top" | "right" | "bottom" | "left";
@@ -36,7 +38,16 @@ export interface GroupNode extends NodeBase {
   type: "group";
   label?: string;
 }
-export type CanvasNode = TextNode | FileNode | LinkNode | GroupNode;
+/** A freehand pen stroke (Notely extension). */
+export interface DrawingNode extends NodeBase {
+  type: "drawing";
+  /** Flat [x0, y0, x1, y1, …], relative to the node at `viewWidth` × `viewHeight`. */
+  points: number[];
+  viewWidth: number;
+  viewHeight: number;
+  strokeWidth?: number;
+}
+export type CanvasNode = TextNode | FileNode | LinkNode | GroupNode | DrawingNode;
 
 export interface CanvasEdge {
   id: string;
@@ -114,7 +125,7 @@ export function normalizeCanvas(raw: unknown): { data: CanvasData; unplaced: Set
     let id = str(r.id) || newId();
     while (ids.has(id)) id = newId();
     ids.add(id);
-    const type = (["text", "file", "link", "group"].includes(r.type as string) ? r.type : r.file ? "file" : r.url ? "link" : "text") as CanvasNode["type"];
+    const type = (["text", "file", "link", "group", "drawing"].includes(r.type as string) ? r.type : r.file ? "file" : r.url ? "link" : "text") as CanvasNode["type"];
     const shape = SHAPES.includes(r.shape as Shape) ? (r.shape as Shape) : undefined;
     const text = str(r.text) ?? str(r.label) ?? "";
     const fallback =
@@ -131,6 +142,18 @@ export function normalizeCanvas(raw: unknown): { data: CanvasData; unplaced: Set
     if (type === "text") nodes.push({ ...base, type, text, ...(shape ? { shape } : {}) });
     else if (type === "file") nodes.push({ ...base, type, file: str(r.file) ?? "", ...(str(r.subpath) ? { subpath: str(r.subpath) } : {}) });
     else if (type === "link") nodes.push({ ...base, type, url: str(r.url) ?? "" });
+    else if (type === "drawing") {
+      const pts = Array.isArray(r.points) ? r.points.filter((v) => num(v) !== undefined) : [];
+      if (pts.length < 2) continue;
+      nodes.push({
+        ...base,
+        type,
+        points: pts.slice(0, pts.length - (pts.length % 2)) as number[],
+        viewWidth: num(r.viewWidth) ?? base.width,
+        viewHeight: num(r.viewHeight) ?? base.height,
+        ...(num(r.strokeWidth) ? { strokeWidth: num(r.strokeWidth) } : {}),
+      });
+    }
     else nodes.push({ ...base, type, ...(str(r.label) ? { label: str(r.label) } : {}) });
   }
 
@@ -422,19 +445,31 @@ export function canvasText(data: CanvasData) {
  * What a file node points to. Paths are vault-relative ("Notebook/Note.md",
  * "Notebook/_pdfs/x.pdf"); a bare "Note.md" means the canvas's own notebook.
  */
-export function fileNodeTarget(file: string, notebook: string): { kind: "note" | "pdf" | "canvas"; name: string; notebook: string } | null {
+export function fileNodeTarget(file: string, notebook: string): { kind: FileKind; name: string; notebook: string } | null {
   const parts = file.replace(/\\/g, "/").split("/").filter(Boolean);
   let nb = notebook;
   const isRest = (p: string[]) =>
-    (p.length === 1 && /\.(md|canvas|pdf)$/i.test(p[0])) || (p.length === 2 && p[0] === "_pdfs" && /\.pdf$/i.test(p[1]));
+    (p.length === 1 && /\.(md|canvas|pdf)$/i.test(p[0])) ||
+    (p.length === 2 && p[0] === "_pdfs" && /\.pdf$/i.test(p[1])) ||
+    (p.length === 2 && p[0] === "_assets" && IMAGE_FILE.test(p[1]));
   if (!isRest(parts) && parts.length > 1) nb = parts.shift()!;
   if (!isRest(parts)) return null;
   const last = parts[parts.length - 1];
+  if (parts[0] === "_assets") return { kind: "image", name: last, notebook: nb };
   if (/\.md$/i.test(last)) return { kind: "note", name: last.slice(0, -3), notebook: nb };
   if (/\.canvas$/i.test(last)) return { kind: "canvas", name: last.slice(0, -7), notebook: nb };
   return { kind: "pdf", name: last, notebook: nb };
 }
 
-export function fileNodePath(notebook: string, kind: "note" | "pdf" | "canvas", name: string) {
-  return kind === "note" ? `${notebook}/${name}.md` : kind === "canvas" ? `${notebook}/${name}.canvas` : `${notebook}/_pdfs/${name}`;
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+export type FileKind = "note" | "pdf" | "canvas" | "image";
+
+export function fileNodePath(notebook: string, kind: FileKind, name: string) {
+  return kind === "note"
+    ? `${notebook}/${name}.md`
+    : kind === "canvas"
+      ? `${notebook}/${name}.canvas`
+      : kind === "image"
+        ? `${notebook}/_assets/${name}`
+        : `${notebook}/_pdfs/${name}`;
 }

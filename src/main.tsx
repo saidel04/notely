@@ -7,6 +7,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { useUi } from "./store/uiStore";
 import { useVault } from "./store/vaultStore";
+import { checkForUpdatesSoon } from "./lib/updates";
 
 // Block the WebView's own context menu; the app provides its own where useful.
 window.addEventListener("contextmenu", (e) => {
@@ -15,14 +16,31 @@ window.addEventListener("contextmenu", (e) => {
 });
 
 if (import.meta.env.DEV) {
-  void Promise.all([import("./store/workspaceStore"), import("./store/highlightStore")]).then(([ws, hl]) => {
-    Object.assign(window, { __notely: { useVault, useUi, useWorkspace: ws.useWorkspace, useHighlights: hl.useHighlights } });
+  void Promise.all([
+    import("./store/workspaceStore"),
+    import("./store/highlightStore"),
+    import("./store/linkIndex"),
+    import("./store/canvasStore"),
+    import("./store/reviewStore"),
+  ]).then(([ws, hl, li, cv, rv]) => {
+    Object.assign(window, {
+      __notely: {
+        useVault,
+        useUi,
+        useWorkspace: ws.useWorkspace,
+        useHighlights: hl.useHighlights,
+        useLinkIndex: li.useLinkIndex,
+        useCanvases: cv.useCanvases,
+        useReview: rv.useReview,
+      },
+    });
   });
 }
 
 void (async () => {
   await useUi.getState().init();
   await useVault.getState().init();
+  checkForUpdatesSoon();
 })();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

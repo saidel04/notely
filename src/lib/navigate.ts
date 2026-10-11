@@ -42,7 +42,7 @@ export const resolveCanvas = (target: string) => localName(resolveRef(target, "c
 export const resolvePdf = (target: string) => localName(resolveRef(target, "pdf"));
 
 /** Switches notebook when needed, then opens the item. */
-async function openIn(notebook: string, item: PaneItem, opts: { pane?: PaneIndex; side?: boolean }) {
+export async function openIn(notebook: string, item: PaneItem, opts: { pane?: PaneIndex; side?: boolean }) {
   if (notebook !== useVault.getState().activeNotebook) {
     await useVault.getState().setActiveNotebook(notebook);
     useUi.getState().toast(`Opened in “${notebook}”`);

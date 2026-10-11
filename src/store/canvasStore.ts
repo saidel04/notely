@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { CanvasData, loadCanvas, serializeCanvas } from "../lib/canvas";
+import { canvasHistory } from "../lib/canvasHistory";
 import { errorMessage, FileMeta, vaultApi } from "../lib/vault";
 import { useUi } from "./uiStore";
 
@@ -83,6 +84,8 @@ export const useCanvases = create<CanvasStore>((set, get) => ({
   },
 
   rename(old, next) {
+    const nb = get().notebook;
+    if (nb) canvasHistory.rename(nb, old, next);
     set((s) => {
       const data = { ...s.data };
       if (old in data) {

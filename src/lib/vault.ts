@@ -41,6 +41,8 @@ export const vaultApi = {
 
   importPdf: (notebook: string, source: string) => invoke<string>("import_pdf", { notebook, source }),
   readPdf: (notebook: string, pdf: string) => invoke<ArrayBuffer>("read_pdf", { notebook, pdf }),
+  restorePdf: (notebook: string, pdf: string, bytes: number[], highlights: string | null) =>
+    invoke<void>("restore_pdf", { notebook, pdf, bytes, highlights }),
   renamePdf: (notebook: string, old: string, next: string) =>
     invoke<void>("rename_pdf", { notebook, old, new: next }),
   deletePdf: (notebook: string, pdf: string) => invoke<void>("delete_pdf", { notebook, pdf }),
@@ -55,6 +57,27 @@ export const vaultApi = {
     invoke<void>("write_text_cache", { notebook, pdf, content }),
 
   exportFile: (path: string, content: string) => invoke<void>("export_file", { path, content }),
+  exportBytes: (path: string, bytes: Uint8Array) =>
+    invoke<void>("export_bytes", bytes, { headers: { "x-path": encodeURIComponent(path) } }),
+
+  /** Saves image bytes into the notebook's `_assets/`; resolves to the file name used. */
+  writeAsset: (notebook: string, name: string, bytes: Uint8Array) =>
+    invoke<string>("write_asset", bytes, {
+      headers: { "x-notebook": encodeURIComponent(notebook), "x-name": encodeURIComponent(name) },
+    }),
+  importAsset: (notebook: string, source: string) => invoke<string>("import_asset", { notebook, source }),
+  readAsset: (notebook: string, name: string) => invoke<ArrayBuffer>("read_asset", { notebook, name }),
+
+  listVersions: (notebook: string, note: string) => invoke<{ time: number; size: number }[]>("list_versions", { notebook, note }),
+  readVersion: (notebook: string, note: string, time: number) => invoke<string>("read_version", { notebook, note, time }),
+  snapshotNote: (notebook: string, note: string) => invoke<boolean>("snapshot_note", { notebook, note }),
+
+  listTemplates: () => invoke<FileMeta[] | null>("list_templates"),
+  readTemplate: (name: string) => invoke<string>("read_template", { name }),
+  writeTemplate: (name: string, content: string) => invoke<void>("write_template", { name, content }),
+
+  readReview: (notebook: string) => invoke<string | null>("read_review", { notebook }),
+  writeReview: (notebook: string, content: string) => invoke<void>("write_review", { notebook, content }),
 };
 
 /** Mirrors the Rust-side `check_name` so we can reject names before a round trip. */

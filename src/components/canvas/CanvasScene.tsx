@@ -1,7 +1,10 @@
-import { BookOpen, FileText, Link2, Network } from "lucide-react";
-import { memo, useMemo } from "react";
-import { CanvasData, CanvasEdge, CanvasNode, colorHex, edgeGeometry, fileNodeTarget, Side } from "../../lib/canvas";
+import { BookOpen, Bookmark, FileText, Link2, Network } from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { assetUrl } from "../../lib/assets";
+import { CanvasData, CanvasEdge, CanvasNode, colorHex, DrawingNode, edgeGeometry, fileNodeTarget, Side } from "../../lib/canvas";
+import { drawingPath, smoothPath } from "../../lib/ink";
 import { displayText, parseLinks } from "../../lib/links";
+import { hlKey, useHighlights } from "../../store/highlightStore";
 import { renderMarkdown } from "../../lib/markdown";
 import { parseTags } from "../../lib/tags";
 import { useVault } from "../../store/vaultStore";
@@ -14,6 +17,8 @@ export interface SceneProps {
   editingId?: string | null;
   /** Live preview of an edge being drawn. */
   pendingEdge?: { from: CanvasNode; fromSide: Side; to: { x: number; y: number } } | null;
+  /** Live preview of a pen stroke being drawn. */
+  pendingInk?: { points: { x: number; y: number }[]; color?: string; width: number } | null;
   hoverId?: string | null;
   interactive?: boolean;
 }
@@ -64,6 +69,7 @@ export const CanvasScene = memo(function CanvasScene({
   selectedEdges,
   editingId,
   pendingEdge,
+  pendingInk,
   hoverId,
   interactive,
 }: SceneProps) {
@@ -94,6 +100,17 @@ export const CanvasScene = memo(function CanvasScene({
         .map((n) => (
           <NodeView key={n.id} node={n} notebook={notebook} selected={!!selectedNodes?.has(n.id)} editing={editingId === n.id} hover={hoverId === n.id} interactive={interactive} />
         ))}
+      {pendingInk && (
+        <path
+          d={smoothPath(pendingInk.points)}
+          stroke={colorHex(pendingInk.color) ?? "var(--text)"}
+          strokeWidth={pendingInk.width}
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          pointerEvents="none"
+        />
+      )}
     </>
   );
 });
@@ -204,6 +221,28 @@ const NodeView = memo(function NodeView({
     );
   }
 
+  if (node.type === "drawing") return <DrawingView node={node} selected={selected} interactive={interactive} />;
+
+  const image = node.type === "file" ? fileNodeTarget(node.file, notebook) : null;
+  if (image?.kind === "image") {
+    return (
+      <g data-node={node.id} className="cv-node">
+        <ImageView node={node} notebook={image.notebook} name={image.name} />
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          rx={4}
+          fill="transparent"
+          stroke={selected ? "var(--accent)" : hover ? "var(--border-strong)" : "transparent"}
+          strokeWidth={selected ? 2 : 1}
+          className={interactive ? "cv-shape" : undefined}
+        />
+      </g>
+    );
+  }
+
   const fill = hex ? tint(hex, 0.13) : "var(--cv-node)";
   const stroke = selected ? "var(--accent)" : hex ?? (hover ? "var(--text-faint)" : "var(--cv-border)");
   const inset = node.type === "text" && node.shape === "diamond" ? { x: w * 0.2, y: h * 0.22 } : node.type === "text" && node.shape === "ellipse" ? { x: w * 0.12, y: h * 0.12 } : { x: 0, y: 0 };
@@ -242,11 +281,88 @@ function NodeBody({ node, notebook }: { node: CanvasNode; notebook: string }) {
       </div>
     );
   }
-  if (node.type === "file") return <FileCard file={node.file} notebook={notebook} />;
+  if (node.type === "file") return <FileCard file={node.file} subpath={node.subpath} notebook={notebook} />;
   return null;
 }
 
-function FileCard({ file, notebook }: { file: string; notebook: string }) {
+/** A pen stroke; a wide invisible stroke underneath makes thin lines easy to click. */
+function DrawingView({ node, selected, interactive }: { node: DrawingNode; selected: boolean; interactive?: boolean }) {
+  const d = drawingPath(node);
+  const width = node.strokeWidth ?? 3;
+  return (
+    <g data-node={node.id} className="cv-node">
+      {selected && (
+        <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={4} fill="none" stroke="var(--accent)" strokeWidth={1} strokeDasharray="4 3" />
+      )}
+      {interactive && <path d={d} stroke="transparent" strokeWidth={width + 12} fill="none" strokeLinecap="round" className="cv-ink-hit" />}
+      <path
+        d={d}
+        stroke={colorHex(node.color) ?? "var(--text)"}
+        strokeWidth={width}
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        pointerEvents="none"
+      />
+    </g>
+  );
+}
+
+/** An image from a notebook's `_assets/`, fitted inside its box. */
+function ImageView({ node, notebook, name }: { node: CanvasNode; notebook: string; name: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    assetUrl(notebook, name).then(
+      (u) => live && setUrl(u),
+      () => live && setFailed(true),
+    );
+    return () => void (live = false);
+  }, [notebook, name]);
+  if (failed) {
+    return (
+      <foreignObject x={node.x} y={node.y} width={node.width} height={node.height}>
+        <div className="cv-card cv-missing">
+          <div className="cv-card-body text-faint">Image not found: {name}</div>
+        </div>
+      </foreignObject>
+    );
+  }
+  if (!url) return <rect data-loading x={node.x} y={node.y} width={node.width} height={node.height} rx={4} fill="var(--bg-hover)" />;
+  return <image href={url} x={node.x} y={node.y} width={node.width} height={node.height} preserveAspectRatio="xMidYMid meet" />;
+}
+
+/** What a card's `#subpath` points at inside a PDF: a page, a highlight or a bookmark. */
+function PdfPlace({ notebook, pdf, subpath }: { notebook: string; pdf: string; subpath: string }) {
+  const frag = subpath.replace(/^#/, "");
+  const k = hlKey(notebook, pdf);
+  const hl = useHighlights((s) => (frag.startsWith("hl-") ? s.byPdf[k]?.find((h) => h.id === frag) : undefined));
+  const bm = useHighlights((s) => (frag.startsWith("bm-") ? s.bookmarks[k]?.find((b) => b.id === frag) : undefined));
+  useEffect(() => {
+    if (frag.startsWith("hl-") || frag.startsWith("bm-")) void useHighlights.getState().ensure(notebook, pdf);
+  }, [notebook, pdf, frag]);
+  const page = /^page=(\d+)$/i.exec(frag)?.[1];
+  if (page) return <div className="cv-card-body text-muted">Page {page}</div>;
+  if (hl) {
+    return (
+      <div className="cv-card-body">
+        <div className="cv-quote" data-color={hl.color}>“{hl.text}”</div>
+        <div className="mt-1 text-[11.5px] text-faint">p. {hl.page}</div>
+      </div>
+    );
+  }
+  if (bm) {
+    return (
+      <div className="cv-card-body flex items-center gap-1.5 text-muted">
+        <Bookmark size={12} /> {bm.name} · p. {bm.page}
+      </div>
+    );
+  }
+  return <div className="cv-card-body text-faint">PDF</div>;
+}
+
+function FileCard({ file, subpath, notebook }: { file: string; subpath?: string; notebook: string }) {
   const target = fileNodeTarget(file, notebook);
   const local = !!target && target.notebook.toLowerCase() === notebook.toLowerCase();
   const body = useVault((s) => (target?.kind === "note" && local ? s.contents[target.name] : undefined));
@@ -274,7 +390,9 @@ function FileCard({ file, notebook }: { file: string; notebook: string }) {
         <span>{icon}</span>
         <span className="truncate">{title}</span>
       </div>
-      {target.kind === "note" && body !== undefined ? (
+      {target.kind === "pdf" && subpath && exists ? (
+        <PdfPlace notebook={target.notebook} pdf={target.name} subpath={subpath} />
+      ) : target.kind === "note" && body !== undefined ? (
         <div className="cv-card-body cv-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(readableLinks(body.slice(0, 600))) }} />
       ) : (
         <div className="cv-card-body text-faint">{exists ? (target.kind === "pdf" ? "PDF" : "Canvas") : "Not found"}</div>

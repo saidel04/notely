@@ -147,6 +147,19 @@ export function findBacklinks(contents: Record<string, string>, target: string, 
     .sort((a, b) => a.localeCompare(b));
 }
 
+/** The line around a link, with every link on it rendered as plain text (for backlink previews). */
+export function lineContext(text: string, link: WikiLink) {
+  const start = text.lastIndexOf("\n", link.from) + 1;
+  const endIdx = text.indexOf("\n", link.to);
+  const raw = text.slice(start, endIdx === -1 ? undefined : endIdx);
+  return parseLinks(raw)
+    .reverse()
+    .reduce((s, l) => s.slice(0, l.from) + displayText(l) + s.slice(l.to), raw)
+    .replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")
+    .trim()
+    .slice(0, 240);
+}
+
 export function displayText(link: WikiLink, highlightText?: string) {
   if (link.alias) return link.alias;
   const base = link.kind === "pdf" ? link.name.replace(/\.pdf$/i, "") : link.kind === "canvas" ? canvasBase(link.name) : link.name;
@@ -158,4 +171,11 @@ export function displayText(link: WikiLink, highlightText?: string) {
     return `“${snip}”`;
   }
   return base;
+}
+
+/** "paper p 12", "paper p. 12", "paper page 12", "paper #12" → a page of a PDF. */
+export function pageQuery(q: string): { pdf: string; page: number } | null {
+  const m = /^(.*?)\s*(?:\bp\.?|\bpage|#)\s*(\d{1,5})\s*$/i.exec(q.trim());
+  const page = m ? parseInt(m[2], 10) : 0;
+  return m && page > 0 ? { pdf: m[1].trim().toLowerCase(), page } : null;
 }

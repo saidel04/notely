@@ -1,10 +1,13 @@
 import { create } from "zustand";
 import { AGENT_GUIDE } from "../lib/agentGuide";
+import { clearAssetUrls } from "../lib/assets";
 import { CanvasData, fileNodePath, fileNodeTarget, parseCanvas, serializeCanvas } from "../lib/canvas";
 import { rewriteLinks, rewriteNotebookPrefix, sameName } from "../lib/links";
+import { hasTag, renameTag, tagKey, tagsIn, validateTag } from "../lib/tags";
 import { settings } from "../lib/settings";
 import { errorMessage, Notebook, validateName, vaultApi } from "../lib/vault";
 import { flushCanvases, useCanvases } from "./canvasStore";
+import { linkIndex } from "./linkIndex";
 import { useUi } from "./uiStore";
 import { useWorkspace } from "./workspaceStore";
 
@@ -38,6 +41,9 @@ interface VaultStore {
   createCanvas(name?: string, content?: string): Promise<string | null>;
   renameCanvas(old: string, next: string): Promise<boolean>;
   deleteCanvas(name: string): Promise<void>;
+
+  /** Renames a #tag (and its nested tags) in every note and canvas of the vault; onto an existing tag, merges them. */
+  renameTag(old: string, next: string): Promise<void>;
 }
 
 const toast = (m: string, tone?: "info" | "error") => useUi.getState().toast(m, tone);
@@ -111,8 +117,12 @@ export const useVault = create<VaultStore>((set, get) => ({
     if (path) {
       try {
         await get().openVault(path);
-      } catch {
-        await settings.set("vaultPath", null);
+      } catch (e) {
+        // Forget the vault only if its folder couldn't be opened at all. A hiccup
+        // after that (one unreadable file, a reload mid-start) shouldn't make the
+        // user pick their vault again.
+        if (get().vaultPath !== path) await settings.set("vaultPath", null);
+        fail(e);
       }
     }
     set({ ready: true });
@@ -124,6 +134,8 @@ export const useVault = create<VaultStore>((set, get) => ({
     // Keep the vault's agent guide current (skipped if the user wrote their own AGENTS.md).
     void vaultApi.writeAgentGuide(AGENT_GUIDE).catch(() => {});
     set({ vaultPath: path });
+    linkIndex.load(path);
+    clearAssetUrls();
     await get().refresh();
     let { notebooks } = get();
     if (notebooks.length === 0) {
@@ -141,12 +153,14 @@ export const useVault = create<VaultStore>((set, get) => ({
     await settings.set("vaultPath", null);
     await useWorkspace.getState().loadLayout(null);
     set({ vaultPath: null, notebooks: [], activeNotebook: null, contents: {} });
+    linkIndex.load(null);
   },
 
   async refresh() {
     try {
       const notebooks = await vaultApi.list();
       set({ notebooks });
+      void linkIndex.sync(notebooks);
       const active = get().activeNotebook;
       if (active && !notebooks.some((n) => n.name === active)) {
         await get().setActiveNotebook(notebooks[0]?.name ?? null);
@@ -215,6 +229,7 @@ export const useVault = create<VaultStore>((set, get) => ({
     try {
       await noteSaver.flushAll();
       await vaultApi.renameNotebook(old, next);
+      linkIndex.renameNotebook(old, next);
       const layout = await settings.get(`layout:${old}`);
       if (layout) await settings.set(`layout:${next}`, layout);
       if (get().activeNotebook === old) {
@@ -226,6 +241,7 @@ export const useVault = create<VaultStore>((set, get) => ({
       // Links into this notebook from anywhere in the vault: "Old/…" → "New/…".
       const changed = await rewriteVault(
         null,
+        old,
         (text) => rewriteNotebookPrefix(text, old, next),
         (file) => (file.toLowerCase().startsWith(old.toLowerCase() + "/") ? `${next}/${file.slice(old.length + 1)}` : null),
       );
@@ -292,6 +308,7 @@ export const useVault = create<VaultStore>((set, get) => ({
     if (!nb) return;
     try {
       await noteSaver.flushAll();
+      const content = get().contents[name] ?? (await vaultApi.readNote(nb, name).catch(() => ""));
       await vaultApi.deleteNote(nb, name);
       useWorkspace.getState().removeItem("note", name);
       set((s) => {
@@ -300,6 +317,15 @@ export const useVault = create<VaultStore>((set, get) => ({
         return { contents };
       });
       await get().refresh();
+      offerUndo(`Deleted “${name}”`, async () => {
+        if (get().activeNotebook !== nb) await get().setActiveNotebook(nb);
+        const restored = await vaultApi.createNote(nb, name, content);
+        if (restored) {
+          set((s) => ({ contents: { ...s.contents, [restored]: content } }));
+          await get().refresh();
+          useWorkspace.getState().open({ kind: "note", name: restored });
+        }
+      });
     } catch (e) {
       fail(e);
     }
@@ -389,10 +415,21 @@ export const useVault = create<VaultStore>((set, get) => ({
     const nb = get().activeNotebook;
     if (!nb) return;
     try {
+      await flushCanvases();
+      const content = await vaultApi.readCanvas(nb, name).catch(() => null);
       useCanvases.getState().remove(name);
       await vaultApi.deleteCanvas(nb, name);
       useWorkspace.getState().removeItem("canvas", name);
       await get().refresh();
+      offerUndo(`Deleted “${name}”`, async () => {
+        if (get().activeNotebook !== nb) await get().setActiveNotebook(nb);
+        const restored = await vaultApi.createCanvas(nb, name, content ?? undefined);
+        if (restored) {
+          await get().refresh();
+          await useCanvases.getState().sync(nb, findNotebook(nb)?.canvases ?? [], true);
+          useWorkspace.getState().open({ kind: "canvas", name: restored });
+        }
+      });
     } catch (e) {
       fail(e);
     }
@@ -402,14 +439,185 @@ export const useVault = create<VaultStore>((set, get) => ({
     const nb = get().activeNotebook;
     if (!nb) return;
     try {
+      // Hold the bytes and highlights so the delete can be undone from the toast.
+      const buffer = await vaultApi.readPdf(nb, name).catch(() => null);
+      const highlights = await vaultApi.readHighlights(nb, name).catch(() => null);
       await vaultApi.deletePdf(nb, name);
       useWorkspace.getState().removeItem("pdf", name);
       await get().refresh();
+      if (!buffer) return;
+      const bytes = [...new Uint8Array(buffer)];
+      offerUndo(`Deleted “${name}”`, async () => {
+        if (get().activeNotebook !== nb) await get().setActiveNotebook(nb);
+        await vaultApi.restorePdf(nb, name, bytes, highlights);
+        await get().refresh();
+        useWorkspace.getState().open({ kind: "pdf", name });
+      });
+    } catch (e) {
+      fail(e);
+    }
+  },
+
+  async renameTag(old, next) {
+    const invalid = validateTag(next);
+    if (invalid) return toast(invalid, "error");
+    if (tagKey(old.replace(/^#/, "")) === tagKey(next.trim().replace(/^#/, ""))) return;
+    try {
+      const r = await renameTagEverywhere(old, next);
+      const files = [r.notes && `${r.notes} note${r.notes === 1 ? "" : "s"}`, r.canvases && `${r.canvases} canvas${r.canvases === 1 ? "" : "es"}`]
+        .filter(Boolean)
+        .join(" and ");
+      if (!files) return toast(`No #${r.from} found`);
+      offerUndo(r.merged ? `Merged #${r.from} into #${r.to} in ${files}` : `Renamed #${r.from} to #${r.to} in ${files}`, async () => {
+        const skipped = await r.undo();
+        if (skipped) toast(`${skipped} file${skipped === 1 ? " was" : "s were"} edited since, so left as is`);
+      });
     } catch (e) {
       fail(e);
     }
   },
 }));
+
+type Change =
+  | { kind: "note"; notebook: string; name: string; before: string; after: string }
+  | { kind: "canvas"; notebook: string; name: string; before: CanvasData; after: CanvasData };
+
+/** Reads a note as the app currently sees it (open notes from memory). */
+const currentNote = (notebook: string, name: string) => {
+  const { activeNotebook, contents } = useVault.getState();
+  return notebook === activeNotebook && name in contents ? Promise.resolve(contents[name]) : vaultApi.readNote(notebook, name);
+};
+
+/**
+ * Puts back each change's "before" — but only where the file still holds the
+ * "after", so edits made since are never overwritten. Returns how many were skipped.
+ */
+async function undoChanges(changes: Change[]) {
+  await noteSaver.flushAll();
+  let skipped = 0;
+  const contents = { ...useVault.getState().contents };
+  const active = useVault.getState().activeNotebook;
+  for (const ch of changes) {
+    try {
+      if (ch.kind === "note") {
+        if ((await currentNote(ch.notebook, ch.name)) !== ch.after) {
+          skipped++;
+          continue;
+        }
+        await writeNow({ notebook: ch.notebook, note: ch.name, content: ch.before, timer: 0 });
+        if (ch.notebook === active) contents[ch.name] = ch.before;
+      } else {
+        const live = ch.notebook === active ? useCanvases.getState().data[ch.name] : undefined;
+        const now = live ?? parseCanvas(await vaultApi.readCanvas(ch.notebook, ch.name)).data;
+        if (serializeCanvas(now) !== serializeCanvas(ch.after)) {
+          skipped++;
+          continue;
+        }
+        if (live) useCanvases.getState().set(ch.name, ch.before);
+        else await vaultApi.writeCanvas(ch.notebook, ch.name, serializeCanvas(ch.before));
+      }
+    } catch {
+      skipped++;
+    }
+  }
+  useVault.setState({ contents });
+  return skipped;
+}
+
+/**
+ * Applies `fn` to the text of every note and canvas in the vault. The active
+ * notebook's open notes/canvases update in place (so editors follow along);
+ * everything else is rewritten on disk. Returns how many files changed, and
+ * an `undo` that restores them exactly.
+ */
+async function rewriteAllText(fn: (text: string) => string, has: (text: string) => boolean) {
+  await noteSaver.flushAll();
+  const active = useVault.getState().activeNotebook;
+  let notes = 0;
+  let canvases = 0;
+  const changes: Change[] = [];
+  const contents = { ...useVault.getState().contents };
+  /** The canvas with `fn` applied to its card texts and group labels, or null if nothing changed. */
+  const touchCanvas = (data: CanvasData): CanvasData | null => {
+    const nodes = data.nodes.map((n) => {
+      if (n.type === "text") return { ...n, text: fn(n.text) };
+      if (n.type === "group" && n.label) return { ...n, label: fn(n.label) };
+      return n;
+    });
+    const changed = nodes.some((n, i) => n !== data.nodes[i] && JSON.stringify(n) !== JSON.stringify(data.nodes[i]));
+    return changed ? ({ ...data, nodes } as CanvasData) : null;
+  };
+
+  for (const nb of useVault.getState().notebooks) {
+    const isActive = nb.name === active;
+    for (const n of nb.notes) {
+      const text = isActive && n.name in contents ? contents[n.name] : await vaultApi.readNote(nb.name, n.name).catch(() => null);
+      if (text === null || !has(text)) continue;
+      const updated = fn(text);
+      if (updated === text) continue;
+      await writeNow({ notebook: nb.name, note: n.name, content: updated, timer: 0 });
+      if (isActive) contents[n.name] = updated;
+      changes.push({ kind: "note", notebook: nb.name, name: n.name, before: text, after: updated });
+      notes++;
+    }
+    for (const c of nb.canvases) {
+      const open = isActive ? useCanvases.getState().data[c.name] : undefined;
+      if (open) {
+        if (!has(JSON.stringify(open))) continue;
+        const next = touchCanvas(open);
+        if (next) {
+          useCanvases.getState().set(c.name, next);
+          changes.push({ kind: "canvas", notebook: nb.name, name: c.name, before: open, after: next });
+          canvases++;
+        }
+        continue;
+      }
+      try {
+        const raw = await vaultApi.readCanvas(nb.name, c.name);
+        if (!has(raw)) continue;
+        const before = parseCanvas(raw).data;
+        const next = touchCanvas(before);
+        if (next) {
+          await vaultApi.writeCanvas(nb.name, c.name, serializeCanvas(next));
+          changes.push({ kind: "canvas", notebook: nb.name, name: c.name, before, after: next });
+          canvases++;
+        }
+      } catch {
+        // unreadable canvas: leave it alone
+      }
+    }
+  }
+  useVault.setState({ contents });
+  return { notes, canvases, undo: () => undoChanges(changes) };
+}
+
+/** Renames a tag everywhere; `merged` is true if the new name was already in use. */
+async function renameTagEverywhere(old: string, next: string) {
+  const from = old.trim().replace(/^#/, "");
+  const to = next.trim().replace(/^#/, "");
+  let merged = false;
+  const needle = `#${tagKey(from)}`;
+  const counts = await rewriteAllText(
+    (text) => renameTag(text, from, to),
+    (text) => {
+      // Every file passes through here, so it's also where we learn whether `to` exists.
+      if (!merged && hasTag(tagsIn(text), to)) merged = true;
+      return text.toLowerCase().includes(needle);
+    },
+  );
+  const ui = useUi.getState();
+  if (ui.tagFilter && tagKey(ui.tagFilter) === tagKey(from)) useUi.setState({ tagFilter: to });
+  return { ...counts, merged, from, to };
+}
+
+/** Shows an "Undo" toast; on click runs `restore` and reports the outcome. */
+function offerUndo(message: string, restore: () => Promise<void>) {
+  useUi.getState().toastAction(message, "Undo", () => {
+    restore()
+      .then(() => toast("Restored"))
+      .catch(fail);
+  });
+}
 
 /** Rewrites links to a renamed note/PDF in every note of the notebook. */
 async function rewriteEverywhere(nb: string, old: string, next: string, renamedNote?: string) {
@@ -448,13 +656,24 @@ function rewriteCanvasFiles(nb: string, kind: "note" | "pdf" | "canvas", old: st
 
 /**
  * Applies a rewrite to every note — and every canvas card path — in the vault
- * (optionally skipping one notebook), writing only files that change.
+ * that links into notebook `mentions` (optionally skipping one notebook),
+ * writing only files that change. The link index narrows this down to the
+ * files that actually name that notebook, so big vaults aren't read in full.
  */
-async function rewriteVault(skip: string | null, noteFn: (text: string) => string, fileFn?: (file: string) => string | null) {
+async function rewriteVault(
+  skip: string | null,
+  mentions: string,
+  noteFn: (text: string) => string,
+  fileFn?: (file: string) => string | null,
+) {
+  // Pick up anything written since the last listing (e.g. just-flushed edits).
+  await useVault.getState().refresh();
+  await linkIndex.sync(useVault.getState().notebooks);
   let changed = 0;
   for (const nb of useVault.getState().notebooks) {
     if (skip && nb.name === skip) continue;
     for (const n of nb.notes) {
+      if (!linkIndex.noteMentions(nb.name, n.name, mentions)) continue;
       const text = await vaultApi.readNote(nb.name, n.name).catch(() => null);
       if (text === null) continue;
       const updated = noteFn(text);
@@ -465,6 +684,7 @@ async function rewriteVault(skip: string | null, noteFn: (text: string) => strin
     }
     if (!fileFn) continue;
     for (const c of nb.canvases) {
+      if (!linkIndex.canvasMentions(nb.name, c.name, mentions)) continue;
       try {
         const data = parseCanvas(await vaultApi.readCanvas(nb.name, c.name)).data;
         let touched = false;
@@ -492,6 +712,7 @@ async function rewriteVault(skip: string | null, noteFn: (text: string) => strin
 async function rewriteOtherNotebooks(nb: string, kind: "note" | "pdf" | "canvas", old: string, next: string) {
   const suffix = kind === "canvas" ? ".canvas" : "";
   const changed = await rewriteVault(
+    nb,
     nb,
     (text) => rewriteLinks(text, `${nb}/${old}${suffix}`, `${nb}/${next}${suffix}`),
     (file) => {

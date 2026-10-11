@@ -3,16 +3,21 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import {
   BookOpen,
   Bot,
+  CalendarDays,
   Check,
   ChevronDown,
   Columns2,
   FileText,
   FolderOpen,
+  GraduationCap,
   Hash,
+  LayoutTemplate,
   Link2,
+  Merge,
   Moon,
   Network,
   Pencil,
+  RefreshCw,
   Plus,
   Search,
   Settings2,
@@ -28,6 +33,10 @@ import { useEffect, useRef, useState } from "react";
 import { actions } from "../../lib/actions";
 import { ITEM_MIME } from "../../lib/dragQuote";
 import { formatLink, sameName } from "../../lib/links";
+import { validateTag } from "../../lib/tags";
+import { templates } from "../../lib/templateActions";
+import { checkForUpdates } from "../../lib/updates";
+import { useDueCount } from "../../store/deck";
 import { useHighlights } from "../../store/highlightStore";
 import { useTagged, useTagIndex } from "../../store/tagIndex";
 import { useUi } from "../../store/uiStore";
@@ -78,8 +87,23 @@ export function Sidebar() {
     useUi.getState().toast(`Moved “${item.name}” to the Recycle Bin`);
   };
 
+  // Up/Down (and Home/End) move focus between the item rows — a roving-focus list.
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const rows = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-sb-item]")];
+    if (!rows.length) return;
+    const here = rows.indexOf(document.activeElement as HTMLElement);
+    let next = here;
+    if (e.key === "ArrowDown") next = here < 0 ? 0 : Math.min(rows.length - 1, here + 1);
+    else if (e.key === "ArrowUp") next = here < 0 ? rows.length - 1 : Math.max(0, here - 1);
+    else if (e.key === "Home") next = 0;
+    else next = rows.length - 1;
+    e.preventDefault();
+    rows[next]?.focus();
+  };
+
   return (
-    <aside className="flex h-full flex-col bg-sidebar">
+    <aside className="flex h-full flex-col bg-sidebar" aria-label="Notebook contents">
       <NotebookSwitcher />
 
       <div className="px-2 pb-3">
@@ -91,20 +115,26 @@ export function Sidebar() {
           active={panes.some((p) => p?.kind === "graph")}
           onClick={() => actions.openLinkMap()}
         />
+        <ToolRow icon={<CalendarDays size={14} />} label="Today" hint="Ctrl ⇧ D" onClick={() => void templates.today()} />
+        <ReviewRow />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 pb-4">
+      <div className="flex-1 overflow-y-auto px-2 pb-4" onKeyDown={onListKeyDown}>
         {tagFilter && (
           <div className="mb-3 flex items-center gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-[12.5px]">
             <Hash size={13} className="text-accent" />
             <span className="flex-1 truncate font-medium text-accent">{tagFilter}</span>
             <span className="text-[11.5px] text-muted">{notes.length + canvases.length}</span>
-            <button title="Clear filter" onClick={() => useUi.setState({ tagFilter: null })} className="rounded p-0.5 text-muted hover:text-ink">
+            <button title="Clear filter" aria-label="Clear tag filter" onClick={() => useUi.setState({ tagFilter: null })} className="rounded p-0.5 text-muted hover:text-ink">
               <X size={13} />
             </button>
           </div>
         )}
-        <Section title="Notes" action={{ title: "New note (Ctrl+N)", icon: <Plus size={14} />, onClick: () => actions.newNote() }}>
+        <Section
+          title="Notes"
+          action={{ title: "New note (Ctrl+N)", icon: <Plus size={14} />, onClick: () => actions.newNote() }}
+          extra={{ title: "New note from template", icon: <LayoutTemplate size={13} />, onClick: () => useUi.getState().openPalette("templates") }}
+        >
           {notes.length === 0 && <Hint>{tagFilter ? "No notes with this tag" : "No notes yet"}</Hint>}
           {notes.map((n) => {
             const item: PaneItem = { kind: "note", name: n.name };
@@ -227,6 +257,9 @@ function NotebookSwitcher() {
           const r = e.currentTarget.getBoundingClientRect();
           setPos(pos ? null : { x: r.left, y: r.bottom + 4 });
         }}
+        aria-label={`Current notebook: ${active ?? "none"}. Switch notebook`}
+        aria-haspopup="menu"
+        aria-expanded={!!pos}
         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover"
       >
         <span className="flex size-[22px] shrink-0 items-center justify-center rounded-[6px] bg-accent text-[11px] font-semibold text-white">
@@ -316,10 +349,52 @@ function ToolRow({
   );
 }
 
+/** Flashcards from highlights, with how many are waiting. */
+function ReviewRow() {
+  const due = useDueCount();
+  return (
+    <button
+      onClick={() => actions.review()}
+      aria-label={due ? `Review flashcards, ${due} waiting` : "Review flashcards"}
+      className="group flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[13px] text-muted hover:bg-hover hover:text-ink"
+    >
+      <span className="text-faint" aria-hidden="true">
+        <GraduationCap size={14} />
+      </span>
+      <span className="flex-1">Review</span>
+      {due > 0 && <span className="rounded-full bg-accent-soft px-1.5 text-[11px] font-medium text-accent tabular-nums">{due}</span>}
+    </button>
+  );
+}
+
 function TagsSection({ active }: { active: string | null }) {
   const tags = useTagIndex();
   const [showAll, setShowAll] = useState(false);
+  const menu = useMenu<string>();
   if (!tags.length) return null;
+
+  const rename = async (tag: string) => {
+    const next = await useUi.getState().ask({
+      title: `Rename #${tag} in every notebook`,
+      initial: tag,
+      placeholder: "New tag name",
+      confirmLabel: "Rename",
+      validate: validateTag,
+    });
+    if (next) await useVault.getState().renameTag(tag, next);
+  };
+  const merge = async (tag: string) => {
+    const others = tags.filter((t) => t.key !== tag.toLowerCase()).map((t) => t.name);
+    const into = await useUi.getState().ask({
+      title: `Merge #${tag} into…`,
+      placeholder: others.slice(0, 3).map((t) => `#${t}`).join(", ") || "Another tag",
+      confirmLabel: "Merge",
+      validate: (v) =>
+        validateTag(v) ??
+        (others.some((t) => t.toLowerCase() === v.trim().replace(/^#/, "").toLowerCase()) ? null : "Pick a tag that's already in use"),
+    });
+    if (into) await useVault.getState().renameTag(tag, into);
+  };
   const shown = showAll ? tags : tags.slice(0, 12);
   return (
     <div className="mb-4">
@@ -333,7 +408,8 @@ function TagsSection({ active }: { active: string | null }) {
             <button
               key={t.key}
               onClick={() => useUi.setState({ tagFilter: on ? null : t.name })}
-              title={`${t.notes.length} note(s), ${t.canvases.length} canvas(es)`}
+              onContextMenu={(e) => menu.open(e, t.name)}
+              title={`${t.notes.length} note(s), ${t.canvases.length} canvas(es) — right-click to rename or merge`}
               className={`rounded-full px-2 py-0.5 text-[12px] transition-colors ${on ? "bg-accent text-white" : "bg-hover text-muted hover:text-ink"}`}
             >
               #{t.name}
@@ -347,30 +423,56 @@ function TagsSection({ active }: { active: string | null }) {
           </button>
         )}
       </div>
+      {menu.state && (
+        <Menu
+          x={menu.state.x}
+          y={menu.state.y}
+          onClose={menu.close}
+          items={[
+            { label: "Show notes with this tag", icon: <Hash />, onSelect: () => useUi.setState({ tagFilter: menu.state!.data }) },
+            "divider",
+            { label: "Rename tag…", icon: <Pencil />, onSelect: () => void rename(menu.state!.data) },
+            ...(tags.length > 1 ? [{ label: "Merge into another tag…", icon: <Merge />, onSelect: () => void merge(menu.state!.data) }] : []),
+          ]}
+        />
+      )}
     </div>
   );
+}
+
+interface SectionAction {
+  title: string;
+  icon: React.ReactNode;
+  onClick: () => void;
 }
 
 function Section({
   title,
   action,
+  extra,
   children,
 }: {
   title: string;
-  action: { title: string; icon: React.ReactNode; onClick: () => void };
+  action: SectionAction;
+  /** Another action shown before the main one. */
+  extra?: SectionAction;
   children: React.ReactNode;
 }) {
   return (
     <div className="mb-4">
       <div className="group flex h-7 items-center justify-between px-2">
-        <span className="text-[11px] font-medium tracking-wide text-faint uppercase">{title}</span>
-        <button
-          onClick={action.onClick}
-          title={action.title}
-          className="flex size-6 items-center justify-center rounded-md text-faint opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-ink"
-        >
-          {action.icon}
-        </button>
+        <span className="flex-1 text-[11px] font-medium tracking-wide text-faint uppercase">{title}</span>
+        {[extra, action].filter((a): a is SectionAction => !!a).map((a) => (
+          <button
+            key={a.title}
+            onClick={a.onClick}
+            title={a.title}
+            aria-label={a.title}
+            className="flex size-6 items-center justify-center rounded-md text-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-hover hover:text-ink"
+          >
+            {a.icon}
+          </button>
+        ))}
       </div>
       {children}
     </div>
@@ -431,11 +533,15 @@ function Row({
     );
   }
 
+  const kindWord = drag?.kind === "pdf" ? "PDF" : drag?.kind === "canvas" ? "canvas" : "note";
   return (
     <button
       onClick={onClick}
       onContextMenu={onContextMenu}
       title={label}
+      data-sb-item
+      aria-label={`${kindWord}: ${label}`}
+      aria-current={focused ? "true" : undefined}
       draggable={!!drag}
       onDragStart={(e) => {
         if (!drag) return;
@@ -447,7 +553,9 @@ function Row({
         focused ? "bg-active text-ink" : open ? "text-ink hover:bg-hover" : "text-muted hover:bg-hover hover:text-ink"
       }`}
     >
-      <span className={focused ? "text-accent" : "text-faint"}>{icon}</span>
+      <span className={focused ? "text-accent" : "text-faint"} aria-hidden="true">
+        {icon}
+      </span>
       <span className="truncate">{label}</span>
     </button>
   );
@@ -508,6 +616,8 @@ function SettingsButton() {
             { label: "Switch vault…", icon: <BookOpen />, onSelect: () => actions.chooseVault() },
             "divider",
             { label: "Connect an AI agent…", icon: <Bot />, onSelect: () => useUi.setState({ agentPanel: true }) },
+            "divider",
+            { label: "Check for updates…", icon: <RefreshCw />, onSelect: () => void checkForUpdates() },
           ]}
         />
       )}

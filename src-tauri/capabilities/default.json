@@ -14,6 +14,8 @@
     "opener:default",
     { "identifier": "opener:allow-open-path", "allow": [{ "path": "**" }] },
     "dialog:default",
+    "updater:default",
+    "process:allow-restart",
     "store:default",
     "window-state:default"
   ]

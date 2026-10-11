@@ -1,22 +1,26 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown, markdownKeymap, markdownLanguage } from "@codemirror/lang-markdown";
+import { closeSearchPanel, findNext, findPrevious, openSearchPanel, search } from "@codemirror/search";
 import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView, keymap, placeholder } from "@codemirror/view";
 import { Link2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ITEM_MIME, QUOTE_MIME, quoteMarkdown } from "../../lib/dragQuote";
 import { formatLink, parseCopiedLink, WikiLink } from "../../lib/links";
-import { editors } from "../../lib/editorRegistry";
+import { saveImage } from "../../lib/assets";
+import { editors, finders, insertBlock } from "../../lib/editorRegistry";
 import { linkSelection } from "../../lib/linkTargets";
 import { followLink, resolveRef } from "../../lib/navigate";
-import { vaultApi } from "../../lib/vault";
+import { errorMessage, vaultApi } from "../../lib/vault";
 import { hlKey, useHighlights } from "../../store/highlightStore";
 import { useUi } from "../../store/uiStore";
 import { findNotebook, noteSaver, useVault } from "../../store/vaultStore";
 import { freshNotes, NoteTarget, PaneIndex } from "../../store/workspaceStore";
 import { Backlinks } from "./Backlinks";
 import { canvasEmbeds } from "./embeds";
+import { imageEmbeds } from "./images";
+import { OutlinePanel } from "./OutlinePanel";
 import { LinkHoverCard } from "./LinkHoverCard";
 import { LinkPicker } from "./LinkPicker";
 import { livePreview, refreshPreview } from "./livePreview";
@@ -27,6 +31,9 @@ import { useCanvases } from "../../store/canvasStore";
 /** Marks transactions that sync content from disk, so they aren't saved back. */
 const external = Annotation.define<boolean>();
 
+/** Cursor and scroll position of notes you've left (e.g. by switching tabs), for this session. */
+const places = new Map<string, { cursor: number; scroll: number }>();
+const placeKey = (notebook: string, note: string) => `${notebook}/${note}`.toLowerCase();
 function wrap(marker: string) {
   return (view: EditorView) => {
     view.dispatch(
@@ -74,7 +81,10 @@ export function NoteEditor({
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lastScroll = useRef(0);
   const editorFont = useUi((s) => s.editorFont);
+  const outlineOpen = useUi((s) => s.outlineOpen);
   const targetRef = useRef(target);
   targetRef.current = target;
   const appliedTarget = useRef<number | null>(null);
@@ -191,7 +201,26 @@ export function NoteEditor({
               icons: false,
             }),
             placeholder("Start writing…  Type [[ to link a note or PDF"),
+            // Find & replace in the note. Only these keys from CodeMirror's search
+            // keymap: its Ctrl+G / Ctrl+D would shadow the app's link map shortcut.
+            search({ top: true }),
+            EditorState.phrases.of({
+              Find: "Find in note",
+              next: "Next",
+              previous: "Previous",
+              all: "All",
+              "match case": "Match case",
+              "by word": "Whole word",
+              regexp: "Regex",
+              Replace: "Replace with",
+              replace: "Replace",
+              "replace all": "Replace all",
+              close: "Close",
+            }),
             keymap.of([
+              { key: "Mod-f", run: openSearchPanel, scope: "editor search-panel" },
+              { key: "F3", run: findNext, shift: findPrevious, scope: "editor search-panel", preventDefault: true },
+              { key: "Escape", run: closeSearchPanel, scope: "editor search-panel" },
               { key: "Mod-b", run: wrap("**") },
               { key: "Mod-i", run: wrap("*") },
               { key: "Mod-l", run: () => openPicker() },
@@ -209,9 +238,25 @@ export function NoteEditor({
               hover: onHover,
               tag: (t) => useUi.setState({ tagFilter: t, sidebarOpen: true }),
             }),
+            imageEmbeds(notebook, (l, side) => void followLink(l, pane, side)),
             EditorView.domEventHandlers({
-              // Paste a copied link onto selected words → the words become that link.
               paste(e, v) {
+                // Pasted screenshots/images are saved into the notebook's _assets folder.
+                const images = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+                if (images.length) {
+                  e.preventDefault();
+                  void (async () => {
+                    try {
+                      const md: string[] = [];
+                      for (const f of images) md.push(await saveImage(notebook, f));
+                      insertBlock(v, md.join("\n"));
+                    } catch (err) {
+                      useUi.getState().toast(errorMessage(err), "error");
+                    }
+                  })();
+                  return true;
+                }
+                // Paste a copied link onto selected words → the words become that link.
                 const sel = v.state.selection.main;
                 if (sel.empty) return false;
                 const link = parseCopiedLink(e.clipboardData?.getData("text/plain") ?? "");
@@ -266,7 +311,20 @@ export function NoteEditor({
       });
       viewRef.current = view;
       editors.set(pane, view);
+      finders.set(pane, () => {
+        view.focus();
+        openSearchPanel(view);
+      });
       applyTarget();
+      // Back on a tab: put the cursor and scroll where they were.
+      const place = placeKey(notebook, note);
+      const saved = places.get(place);
+      if (saved && !targetRef.current) {
+        // Known from the start, so leaving again before any scroll keeps it.
+        lastScroll.current = saved.scroll;
+        view.dispatch({ selection: { anchor: Math.min(saved.cursor, view.state.doc.length) } });
+        requestAnimationFrame(() => scrollRef.current && (scrollRef.current.scrollTop = saved.scroll));
+      }
 
       const refresh = () => view.dispatch({ effects: refreshPreview.of(null) });
       unsubs = [
@@ -290,9 +348,17 @@ export function NoteEditor({
     return () => {
       cancelled = true;
       unsubs.forEach((u) => u());
-      if (viewRef.current && editors.get(pane) === viewRef.current) editors.delete(pane);
+      if (viewRef.current) {
+        places.set(placeKey(notebook, note), { cursor: viewRef.current.state.selection.main.head, scroll: lastScroll.current });
+      }
+      if (viewRef.current && editors.get(pane) === viewRef.current) {
+        editors.delete(pane);
+        finders.delete(pane);
+      }
       viewRef.current?.destroy();
       viewRef.current = null;
+      // A new view (e.g. after a remount) should apply a pending target again.
+      appliedTarget.current = null;
     };
   }, [notebook, note, pane]);
 
@@ -315,72 +381,77 @@ export function NoteEditor({
   };
 
   return (
-    <div
-      className="h-full overflow-y-auto"
-      onScroll={() => {
-        if (bubble) setBubble(null);
-        if (hover) setHover(null);
-      }}
-      style={{ ["--editor-font" as string]: editorFont === "serif" ? "var(--font-serif)" : "var(--font-sans)" }}
-    >
-      <div className="mx-auto max-w-[720px] px-12 pt-14 pb-3">
-        <input
-          ref={titleRef}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              (e.target as HTMLInputElement).blur();
+    <div className="note-pane relative h-full">
+      <div
+        ref={scrollRef}
+        className="h-full overflow-y-auto"
+        onScroll={(e) => {
+          lastScroll.current = e.currentTarget.scrollTop;
+          if (bubble) setBubble(null);
+          if (hover) setHover(null);
+        }}
+        style={{ ["--editor-font" as string]: editorFont === "serif" ? "var(--font-serif)" : "var(--font-sans)" }}
+      >
+        <div className="mx-auto max-w-[720px] px-12 pt-14 pb-3">
+          <input
+            ref={titleRef}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                (e.target as HTMLInputElement).blur();
+                viewRef.current?.focus();
+              } else if (e.key === "Escape") {
+                setTitle(note);
+                requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
+              }
+            }}
+            spellCheck={false}
+            className="w-full bg-transparent text-[2rem] leading-tight font-semibold tracking-[-0.02em] text-ink outline-none placeholder:text-faint"
+            style={{ fontFamily: "var(--editor-font)" }}
+            placeholder="Untitled"
+          />
+        </div>
+        <div ref={host} className="text-[16px]" />
+        <div className="min-h-[30vh] cursor-text" onMouseDown={(e) => (e.preventDefault(), focusEnd())} />
+        <Backlinks target={note} self={note} pane={pane} />
+
+        {hover && <LinkHoverCard link={hover.link} rect={hover.rect} notebook={notebook} />}
+
+        {bubble && !picker && (
+          <button
+            // Keep the editor's selection: don't take focus on press.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={openPicker}
+            className="animate-pop fixed z-40 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink shadow-pop hover:text-accent"
+            style={{ left: bubble.x, top: bubble.y - 8 }}
+            title="Link these words to a note, quote, PDF or canvas (Ctrl+L)"
+          >
+            <Link2 size={13} className="text-accent" /> Link
+            <span className="font-normal text-faint">Ctrl L</span>
+          </button>
+        )}
+
+        {picker && (
+          <LinkPicker
+            notebook={notebook}
+            note={note}
+            anchor={picker}
+            selectionText={picker.text}
+            onClose={() => {
+              setPicker(null);
               viewRef.current?.focus();
-            } else if (e.key === "Escape") {
-              setTitle(note);
-              requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
-            }
-          }}
-          spellCheck={false}
-          className="w-full bg-transparent text-[2rem] leading-tight font-semibold tracking-[-0.02em] text-ink outline-none placeholder:text-faint"
-          style={{ fontFamily: "var(--editor-font)" }}
-          placeholder="Untitled"
-        />
+            }}
+            onPick={(t) => {
+              setPicker(null);
+              if (viewRef.current) linkSelection(viewRef.current, t.target, t.fragment);
+            }}
+          />
+        )}
       </div>
-      <div ref={host} className="text-[16px]" />
-      <div className="min-h-[30vh] cursor-text" onMouseDown={(e) => (e.preventDefault(), focusEnd())} />
-      <Backlinks target={note} self={note} pane={pane} />
-
-      {hover && <LinkHoverCard link={hover.link} rect={hover.rect} notebook={notebook} />}
-
-      {bubble && !picker && (
-        <button
-          // Keep the editor's selection: don't take focus on press.
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={openPicker}
-          className="animate-pop fixed z-40 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink shadow-pop hover:text-accent"
-          style={{ left: bubble.x, top: bubble.y - 8 }}
-          title="Link these words to a note, quote, PDF or canvas (Ctrl+L)"
-        >
-          <Link2 size={13} className="text-accent" /> Link
-          <span className="font-normal text-faint">Ctrl L</span>
-        </button>
-      )}
-
-      {picker && (
-        <LinkPicker
-          notebook={notebook}
-          note={note}
-          anchor={picker}
-          selectionText={picker.text}
-          onClose={() => {
-            setPicker(null);
-            viewRef.current?.focus();
-          }}
-          onPick={(t) => {
-            setPicker(null);
-            if (viewRef.current) linkSelection(viewRef.current, t.target, t.fragment);
-          }}
-        />
-      )}
+      {outlineOpen && <OutlinePanel note={note} pane={pane} scroller={scrollRef} />}
     </div>
   );
 }

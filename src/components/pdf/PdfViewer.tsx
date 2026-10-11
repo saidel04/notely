@@ -8,8 +8,10 @@ import {
   SunMoon,
   Coffee,
   ChevronUp,
+  Crop,
   Download,
   FilePlus2,
+  GraduationCap,
   Highlighter,
   Link2,
   Loader2,
@@ -22,7 +24,11 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { actions } from "../../lib/actions";
+import { saveImageFile } from "../../lib/assets";
 import { startQuoteDrag } from "../../lib/dragQuote";
+import { editors, insertBlock } from "../../lib/editorRegistry";
+import { captureScale, figureMarkdown, figureName, Pt, regionFrom } from "../../lib/figure";
 import { exportHighlights, noteFromHighlights } from "../../lib/exporting";
 import { formatLink } from "../../lib/links";
 import { settings, setSettingSoon } from "../../lib/settings";
@@ -30,10 +36,10 @@ import { errorMessage, vaultApi } from "../../lib/vault";
 import { Highlight, HIGHLIGHT_COLORS, HighlightColor, hlKey, useHighlights } from "../../store/highlightStore";
 import { PdfTheme, useUi } from "../../store/uiStore";
 import { PaneIndex, PdfTarget, useWorkspace } from "../../store/workspaceStore";
-import { useBacklinks } from "../editor/Backlinks";
+import { openBacklink, useBacklinks } from "../editor/Backlinks";
 import { BookmarksPanel } from "./BookmarksPanel";
 import { Floating, Menu } from "../ui/Menu";
-import { pointOnPage, selectionToRects } from "./geometry";
+import { pointOnPage, renderRegion, selectionToRects } from "./geometry";
 import { PdfPage } from "./PdfPage";
 import { pdfAssets, pdfjs, PDFDocumentProxy } from "./pdfjs";
 import { usePdfSearch } from "./usePdfSearch";
@@ -351,10 +357,63 @@ export function PdfViewer({
     return () => el.removeEventListener("wheel", onWheel);
   }, [scale, setScale]);
 
+  // ---------- capture a region as a figure ----------
+  const [capturing, setCapturing] = useState(false);
+  /** The box being dragged, in client coordinates (drawn as a fixed overlay). */
+  const [box, setBox] = useState<{ a: Pt; b: Pt } | null>(null);
+
+  const captureRegion = async (a: Pt, b: Pt) => {
+    const root = scroller.current;
+    const start = root && pointOnPage(root, a.x, a.y);
+    const pageEl = start && root.querySelector<HTMLElement>(`[data-page="${start.page}"]`);
+    if (!doc || !start || !pageEl) return;
+    const region = regionFrom(start.page, a, b, pageEl.getBoundingClientRect());
+    if (region.w * pageEl.offsetWidth < 8 || region.h * pageEl.offsetHeight < 8) return; // a click, not a box
+    try {
+      const k = captureScale(scale, window.devicePixelRatio || 1);
+      const blob = await renderRegion(doc, region, k);
+      const md = figureMarkdown(await saveImageFile(notebook, blob, figureName(pdf, region.page, k)), pdf, region.page);
+      // Into the note beside the PDF; otherwise onto the clipboard.
+      const view = editors.get(pane === 0 ? 1 : 0) ?? [...editors.values()][0];
+      if (view) {
+        insertBlock(view, md);
+        useUi.getState().toast("Figure added to the note");
+      } else {
+        await navigator.clipboard.writeText(md);
+        useUi.getState().toast("Figure saved — paste it into a note");
+      }
+    } catch (e) {
+      useUi.getState().toast(errorMessage(e), "error");
+    }
+  };
+
+  const onCaptureDown = (e: React.PointerEvent) => {
+    if (!capturing || e.button !== 0) return;
+    e.preventDefault(); // no text selection while drawing the box
+    e.stopPropagation();
+    const a = { x: e.clientX, y: e.clientY };
+    setBox({ a, b: a });
+    const move = (ev: PointerEvent) => setBox({ a, b: { x: ev.clientX, y: ev.clientY } });
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setBox(null);
+      setCapturing(false);
+      void captureRegion(a, { x: ev.clientX, y: ev.clientY });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   const focusedPane = useWorkspace((s) => s.focused);
   useEffect(() => {
     if (focusedPane !== pane) return;
     const onKey = (e: KeyboardEvent) => {
+      if (capturing && e.key === "Escape") {
+        e.preventDefault();
+        setBox(null);
+        return setCapturing(false);
+      }
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "b" && !(e.target as HTMLElement).closest?.(".cm-editor, input, textarea")) {
         e.preventDefault();
         return addBookmarkHere();
@@ -478,7 +537,9 @@ export function PdfViewer({
         }}
         onMouseUp={onMouseUp}
         onMouseDown={() => setSelection(null)}
+        onPointerDownCapture={onCaptureDown}
         onContextMenu={onContextMenu}
+        style={capturing ? { cursor: "crosshair", userSelect: "none" } : undefined}
       >
         {!doc ? (
           <div className="flex h-full items-center justify-center text-faint">
@@ -511,6 +572,25 @@ export function PdfViewer({
         )}
       </div>
 
+      {capturing && !box && (
+        <div className="animate-pop pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center">
+          <div className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[12px] text-muted shadow-pop">
+            Drag a box around a figure or equation · <span className="text-faint">Esc to cancel</span>
+          </div>
+        </div>
+      )}
+      {box && (
+        <div
+          className="pointer-events-none fixed z-30 rounded-[3px] border-2 border-accent bg-accent-soft"
+          style={{
+            left: Math.min(box.a.x, box.b.x),
+            top: Math.min(box.a.y, box.b.y),
+            width: Math.abs(box.b.x - box.a.x),
+            height: Math.abs(box.b.y - box.a.y),
+          }}
+        />
+      )}
+
       {/* Floating controls: only visible while the pointer is over the PDF. */}
       {doc && (
         <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center opacity-0 transition-opacity duration-200 group-hover/pdf:opacity-100">
@@ -539,6 +619,13 @@ export function PdfViewer({
             </IconBtn>
             <IconBtn title="Copy link to this page" onClick={() => copy(formatLink(pdf, `page=${current}`), "Page link")}>
               <Link2 size={14} />
+            </IconBtn>
+            <IconBtn
+              title="Capture a region as a figure for your note (Esc to cancel)"
+              active={capturing}
+              onClick={() => setCapturing(!capturing)}
+            >
+              <Crop size={14} />
             </IconBtn>
             <IconBtn title="Highlights" active={panel === "highlights"} onClick={() => setPanel(panel === "highlights" ? null : "highlights")}>
               <Highlighter size={14} />
@@ -607,6 +694,9 @@ export function PdfViewer({
           actions={
             panel === "highlights" && highlights.length > 0 ? (
               <>
+                <IconBtn title="Review these highlights as flashcards" onClick={() => actions.review(pdf)}>
+                  <GraduationCap size={14} />
+                </IconBtn>
                 <IconBtn title="Collect highlights into a new note" onClick={() => noteFromHighlights(pdf)}>
                   <FilePlus2 size={14} />
                 </IconBtn>
@@ -664,13 +754,14 @@ export function PdfViewer({
           ) : (
             mentions.map((m) => (
               <button
-                key={m.note}
-                onClick={(e) =>
-                  useWorkspace.getState().open({ kind: "note", name: m.note }, e.ctrlKey ? { pane } : { pane: pane === 0 ? 1 : 0 })
-                }
+                key={`${m.notebook ?? ""}/${m.note}`}
+                onClick={(e) => openBacklink(m, e.ctrlKey ? { pane } : { pane: pane === 0 ? 1 : 0 })}
                 className="w-full rounded-md px-2 py-2 text-left hover:bg-hover"
               >
-                <div className="text-[12.5px] font-medium text-ink">{m.note}</div>
+                <div className="text-[12.5px] font-medium text-ink">
+                  {m.notebook && <span className="font-normal text-faint">{m.notebook} › </span>}
+                  {m.note}
+                </div>
                 {m.context && <div className="line-clamp-2 text-[12px] text-muted">{m.context}</div>}
               </button>
             ))

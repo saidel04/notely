@@ -35,7 +35,7 @@ function readable(s: string) {
     .replace(/\[\[|\]\]/g, "")
     .replace(/\.pdf#hl-[a-z0-9]+/gi, "")
     .replace(/\.pdf#page=(\d+)/gi, " p. $1")
-    .replace(/\.pdf/gi, "")
+    .replace(/\.pdf\b/gi, "")
     .replace(/(\*\*|__|~~|`)/g, "")
     .replace(/(^|\s)#{1,6}\s/g, "$1")
     .replace(/\s+/g, " ");

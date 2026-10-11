@@ -18,5 +18,6 @@ export default defineConfig(() => ({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   build: { target: "es2022", chunkSizeWarningLimit: 3000 },
-  test: { environment: "node" },
+  // e2e/*.spec.mjs drive the running app (see e2e/README); they are not unit tests.
+  test: { environment: "node", include: ["src/**/*.test.ts", "agent/**/*.test.ts"] },
 }));

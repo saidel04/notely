@@ -7,6 +7,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(vault::VaultState::default())
         .invoke_handler(tauri::generate_handler![
             vault::open_vault,
@@ -27,13 +29,26 @@ pub fn run() {
             vault::write_agent_guide,
             vault::import_pdf,
             vault::read_pdf,
+            vault::restore_pdf,
             vault::rename_pdf,
             vault::delete_pdf,
+            vault::write_asset,
+            vault::import_asset,
+            vault::read_asset,
+            vault::list_versions,
+            vault::read_version,
+            vault::snapshot_note,
+            vault::list_templates,
+            vault::read_template,
+            vault::write_template,
+            vault::read_review,
+            vault::write_review,
             vault::read_highlights,
             vault::write_highlights,
             vault::read_text_cache,
             vault::write_text_cache,
             vault::export_file,
+            vault::export_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -28,3 +28,6 @@ public/pdfjs
 
 # Built by agent/build.mjs
 agent/dist
+
+# Never commit signing keys (the updater key lives in ~/.tauri)
+*.key

@@ -15,8 +15,10 @@ import { zoom, zoomIdentity, ZoomBehavior } from "d3-zoom";
 import { Maximize2 } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { CanvasData, fileNodeTarget } from "../../lib/canvas";
-import { parseLinks, sameName } from "../../lib/links";
+import { canvasBase, parseLinks, sameName } from "../../lib/links";
+import { openIn, resolveRef } from "../../lib/navigate";
 import { useCanvases } from "../../store/canvasStore";
+import { ExternalMention, externalMentions, useLinkIndex } from "../../store/linkIndex";
 import { useVault } from "../../store/vaultStore";
 import { PaneIndex, useWorkspace } from "../../store/workspaceStore";
 
@@ -28,6 +30,8 @@ interface Node extends SimulationNodeDatum {
   name: string;
   label: string;
   degree: number;
+  /** Set for items in another notebook (linked from or to this one). */
+  notebook?: string;
 }
 
 type Edge = SimulationLinkDatum<Node> & { source: string | Node; target: string | Node };
@@ -35,11 +39,39 @@ type Edge = SimulationLinkDatum<Node> & { source: string | Node; target: string 
 /** Node positions survive rebuilds (e.g. after adding a link) so the map doesn't jump around. */
 const positions = new Map<string, { x: number; y: number }>();
 
-function buildGraph(notebook: string, notes: string[], pdfs: string[], canvases: Record<string, CanvasData | undefined>, contents: Record<string, string>) {
+function buildGraph(
+  notebook: string,
+  notes: string[],
+  pdfs: string[],
+  canvases: Record<string, CanvasData | undefined>,
+  contents: Record<string, string>,
+  incoming: ExternalMention[],
+) {
   const nodes = new Map<string, Node>();
-  const add = (id: string, kind: Kind, name: string, label: string) => {
-    if (!nodes.has(id)) nodes.set(id, { id, kind, name, label, degree: 0 });
+  const add = (id: string, kind: Kind, name: string, label: string, nb?: string) => {
+    if (!nodes.has(id)) nodes.set(id, { id, kind, name, label, degree: 0, notebook: nb });
     return nodes.get(id)!;
+  };
+  const isHere = (nb: string | null) => !nb || sameName(nb, notebook);
+  /** A node for an item in another notebook, if it exists. */
+  const external = (nb: string, kind: "note" | "pdf" | "canvas", name: string) => {
+    const ref = resolveRef(`${nb}/${kind === "canvas" ? `${canvasBase(name)}.canvas` : name}`, kind);
+    if (!ref || sameName(ref.notebook, notebook)) return null;
+    const label = kind === "pdf" ? ref.name.replace(/\.pdf$/i, "") : ref.name;
+    return add(`x:${ref.notebook}/${kind}:${ref.name}`.toLowerCase(), kind, ref.name, `${ref.notebook} › ${label}`, ref.notebook);
+  };
+  /** The node for an item of this notebook, if it exists. */
+  const local = (kind: "note" | "pdf" | "canvas", name: string) => {
+    if (kind === "pdf") {
+      const pdf = pdfs.find((p) => sameName(p, name));
+      return pdf ? nodes.get(`p:${pdf}`)! : null;
+    }
+    if (kind === "canvas") {
+      const c = Object.keys(canvases).find((x) => sameName(x, canvasBase(name)));
+      return c ? nodes.get(`c:${c}`)! : null;
+    }
+    const hit = notes.find((n) => sameName(n, name));
+    return hit ? nodes.get(`n:${hit}`)! : null;
   };
   notes.forEach((n) => add(`n:${n}`, "note", n, n));
   pdfs.forEach((p) => add(`p:${p}`, "pdf", p, p.replace(/\.pdf$/i, "")));
@@ -59,7 +91,12 @@ function buildGraph(notebook: string, notes: string[], pdfs: string[], canvases:
     for (const n of data?.nodes ?? []) {
       if (n.type !== "file") continue;
       const t = fileNodeTarget(n.file, notebook);
-      if (!t || !sameName(t.notebook, notebook)) continue;
+      if (!t || t.kind === "image") continue;
+      if (!sameName(t.notebook, notebook)) {
+        const x = external(t.notebook, t.kind, t.name);
+        if (x) connect(`c:${name}`, x.id);
+        continue;
+      }
       const match = (list: string[]) => list.find((x) => sameName(x, t.name));
       const id = t.kind === "note" ? match(notes) && `n:${match(notes)}` : t.kind === "pdf" ? match(pdfs) && `p:${match(pdfs)}` : `c:${t.name}`;
       if (id) connect(`c:${name}`, id);
@@ -67,27 +104,18 @@ function buildGraph(notebook: string, notes: string[], pdfs: string[], canvases:
   }
   for (const note of notes) {
     for (const l of parseLinks(contents[note] ?? "")) {
-      let target: Node;
-      if (l.kind === "pdf") {
-        const pdf = pdfs.find((p) => sameName(p, l.target));
-        if (!pdf) continue;
-        target = nodes.get(`p:${pdf}`)!;
-      } else if (l.kind === "canvas") {
-        const c = Object.keys(canvases).find((x) => sameName(`${x}.canvas`, l.target));
-        if (!c) continue;
-        target = nodes.get(`c:${c}`)!;
-      } else {
-        const hit = notes.find((n) => sameName(n, l.target));
-        target = hit ? nodes.get(`n:${hit}`)! : add(`g:${l.target.toLowerCase()}`, "ghost", l.target, l.target);
-      }
-      const source = `n:${note}`;
-      if (target.id === source) continue;
-      const key = [source, target.id].sort().join("→");
-      if (edges.has(key)) continue;
-      edges.set(key, { source, target: target.id });
-      nodes.get(source)!.degree++;
-      target.degree++;
+      let target: Node | null;
+      if (!isHere(l.notebook)) target = external(l.notebook!, l.kind, l.name);
+      else if (l.kind !== "note") target = local(l.kind, l.name);
+      else target = local("note", l.name) ?? add(`g:${l.name.toLowerCase()}`, "ghost", l.name, l.name);
+      if (target) connect(`n:${note}`, target.id);
     }
+  }
+  // Notes elsewhere in the vault that link into this notebook.
+  for (const m of incoming) {
+    const target = local(m.link.kind, m.link.name);
+    const source = target && external(m.notebook, "note", m.note);
+    if (source) connect(source.id, target.id);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()] };
 }
@@ -110,9 +138,14 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
     notebook?.canvases.forEach((c) => (out[c.name] = canvasData[c.name]));
     return out;
   }, [notebook, canvasData]);
+  const index = useLinkIndex((s) => s.notes);
+  const incoming = useMemo(() => (notebook ? externalMentions(index, notebook.name) : []), [index, notebook]);
+  const allNotebooks = useVault((s) => s.notebooks);
   const built = useMemo(
-    () => buildGraph(notebook?.name ?? "", notes, pdfs, canvases, contents),
-    [notebook, notes, pdfs, canvases, contents],
+    () => buildGraph(notebook?.name ?? "", notes, pdfs, canvases, contents, incoming),
+    // allNotebooks: external nodes resolve against the whole vault.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [notebook, notes, pdfs, canvases, contents, incoming, allNotebooks],
   );
 
   // Only rebuild the simulation when the structure changes, not on every keystroke.
@@ -165,7 +198,7 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
       .selectAll<SVGGElement, Node>("g")
       .data(nodes, (d) => d.id)
       .join("g")
-      .attr("class", (d) => `lm-node lm-${d.kind}`)
+      .attr("class", (d) => `lm-node lm-${d.kind}${d.notebook ? " lm-external" : ""}`)
       .attr("data-id", (d) => d.id);
 
     node
@@ -192,7 +225,9 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
       .attr("class", "lm-label")
       .attr("y", (d) => radius(d) + 13)
       .text((d) => (d.label.length > 34 ? d.label.slice(0, 32) + "…" : d.label));
-    node.append("title").text((d) => (d.kind === "ghost" ? `${d.label} (not created yet)` : d.label));
+    node
+      .append("title")
+      .text((d) => (d.kind === "ghost" ? `${d.label} (not created yet)` : d.notebook ? `${d.label} (in another notebook)` : d.label));
 
     // ----- hover: focus a node's neighborhood -----
     node
@@ -211,6 +246,7 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
         if (e.defaultPrevented) return; // was a drag
         const ws = useWorkspace.getState();
         const target: PaneIndex = pane === 0 ? 1 : 0;
+        if (d.notebook && d.kind !== "ghost") return void openIn(d.notebook, { kind: d.kind, name: d.name }, { pane: target });
         if (d.kind === "pdf" || d.kind === "canvas") ws.open({ kind: d.kind, name: d.name }, { pane: target });
         else {
           const name = d.kind === "ghost" ? await useVault.getState().createNote(d.name) : d.name;
@@ -317,6 +353,7 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
         <Legend shape="square" label="PDF" />
         <Legend shape="diamond" label="Canvas" />
         <Legend shape="ghost" label="Not created" />
+        {graph.nodes.some((n) => n.notebook) && <Legend shape="external" label="Other notebook" />}
         <span className="text-faint">
           {graph.nodes.length} items · {linkCount} links
         </span>
@@ -333,7 +370,7 @@ export function LinkMap({ pane }: { pane: PaneIndex }) {
   );
 }
 
-function Legend({ shape, label }: { shape: "circle" | "square" | "diamond" | "ghost"; label: string }) {
+function Legend({ shape, label }: { shape: "circle" | "square" | "diamond" | "ghost" | "external"; label: string }) {
   if (shape === "diamond") {
     return (
       <span className="flex items-center gap-1.5">
@@ -347,7 +384,9 @@ function Legend({ shape, label }: { shape: "circle" | "square" | "diamond" | "gh
       <span
         className={`inline-block size-2.5 ${shape === "square" ? "rounded-[2px] bg-[var(--lm-pdf)]" : "rounded-full"} ${
           shape === "circle" ? "bg-[var(--lm-note)]" : ""
-        } ${shape === "ghost" ? "border border-dashed border-faint" : ""}`}
+        } ${shape === "ghost" ? "border border-dashed border-faint" : ""} ${
+          shape === "external" ? "rounded-full border-[1.5px] border-[var(--lm-note)]" : ""
+        }`}
       />
       {label}
     </span>

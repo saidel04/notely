@@ -31,12 +31,32 @@ describe("findInPages", () => {
 });
 
 describe("matchRects / snippet", () => {
-  it("interpolates a range within an item", () => {
-    const pt = { text: "abcdefghij", items: [{ start: 0, end: 10, x: 0.1, y: 0.2, w: 0.5, h: 0.02 }] };
-    const [r] = matchRects(3, pt, 2, 7);
+  // A horizontal item: top-left (0.1, 0.2), width 0.5, height 0.02.
+  const horizontal = {
+    text: "abcdefghij",
+    items: [{ start: 0, end: 10, tx: 0.1, ty: 0.2, bx: 0.1, by: 0.22, dx: 0.5, dy: 0 }],
+  };
+
+  it("interpolates a range within a horizontal item", () => {
+    const [r] = matchRects(3, horizontal, 2, 7);
     expect(r.page).toBe(3);
     expect(r.x).toBeCloseTo(0.2);
     expect(r.w).toBeCloseTo(0.25);
+    expect(r.y).toBeCloseTo(0.2);
+    expect(r.h).toBeCloseTo(0.02);
+  });
+
+  it("bounds a slice of a rotated item (baseline running downward)", () => {
+    // Baseline goes straight down from (0.5, 0.1); glyph box is 0.02 wide to the left.
+    const vertical = {
+      text: "abcdefghij",
+      items: [{ start: 0, end: 10, tx: 0.5, ty: 0.1, bx: 0.52, by: 0.1, dx: 0, dy: 0.5 }],
+    };
+    const [r] = matchRects(1, vertical, 0, 5); // first half
+    expect(r.x).toBeCloseTo(0.5);
+    expect(r.w).toBeCloseTo(0.02);
+    expect(r.y).toBeCloseTo(0.1);
+    expect(r.h).toBeCloseTo(0.25); // half the baseline length
   });
 
   it("builds a trimmed snippet around a match", () => {

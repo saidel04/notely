@@ -6,7 +6,14 @@ import {
   FileText,
   Download,
   FolderOpen,
+  GraduationCap,
+  CalendarDays,
+  History,
+  LayoutTemplate,
+  ListPlus,
+  ListTree,
   Network,
+  Quote,
   Printer,
   Search,
   Library,
@@ -22,6 +29,9 @@ import {
 } from "lucide-react";
 import { ReactNode } from "react";
 import { actions } from "../../lib/actions";
+import { citations } from "../../lib/citeSources";
+import { templates } from "../../lib/templateActions";
+import { finders } from "../../lib/editorRegistry";
 import { exportHighlights, exportNoteMarkdown, noteFromHighlights, printNote } from "../../lib/exporting";
 import { useUi } from "../../store/uiStore";
 import { useVault } from "../../store/vaultStore";
@@ -129,6 +139,12 @@ export function CommandPalette() {
           ) : (
             <>
               <Command.Group heading="Create">
+                <Item value="New note from template lecture reading" icon={<LayoutTemplate />} onSelect={() => ui.openPalette("templates", side)}>
+                  New note from template…
+                </Item>
+                <Item value="Today daily note journal" icon={<CalendarDays />} hint="Ctrl Shift D" onSelect={run(() => void templates.today())}>
+                  Open today's note
+                </Item>
                 <Item value="New note" icon={<Plus />} hint="Ctrl N" onSelect={run(() => actions.newNote())}>
                   New note
                 </Item>
@@ -154,10 +170,41 @@ export function CommandPalette() {
                 <Item value="Search notebook find text" icon={<Search />} hint="Ctrl Shift F" onSelect={run(() => actions.searchNotebook())}>
                   Search notebook
                 </Item>
+                <Item value="Review flashcards highlights spaced repetition study" icon={<GraduationCap />} onSelect={run(() => actions.review())}>
+                  Review flashcards
+                </Item>
                 <Item value="Open link map graph" icon={<Network />} hint="Ctrl G" onSelect={run(() => actions.openLinkMap())}>
                   Open link map
                 </Item>
               </Command.Group>
+              {current?.kind === "note" && (
+                <Command.Group heading="This note">
+                  <Item value="Find in note search replace" icon={<Search />} hint="Ctrl F" onSelect={run(() => finders.get(ws.focused)?.())}>
+                    Find in note
+                  </Item>
+                  <Item value="Toggle outline headings table of contents" icon={<ListTree />} hint="Ctrl Shift O" onSelect={run(() => ui.toggleOutline())}>
+                    {ui.outlineOpen ? "Hide outline" : "Show outline"}
+                  </Item>
+                  <Item value="Copy references APA citations bibliography" icon={<Quote />} onSelect={run(() => void citations.copyApa(current.name))}>
+                    Copy references (APA)
+                  </Item>
+                  <Item value="Copy citations BibTeX bibliography" icon={<Quote />} onSelect={run(() => void citations.copyBibtex(current.name))}>
+                    Copy citations (BibTeX)
+                  </Item>
+                  <Item value="Export citations bib BibTeX file" icon={<Download />} onSelect={run(() => void citations.exportBib(current.name))}>
+                    Export citations as .bib…
+                  </Item>
+                  <Item value="Add References section bibliography APA" icon={<ListPlus />} onSelect={run(() => void citations.insertReferences(current.name, ws.focused))}>
+                    Add a References section
+                  </Item>
+                  <Item value="Version history restore earlier versions" icon={<History />} onSelect={run(() => useUi.setState({ history: { note: current.name } }))}>
+                    Version history…
+                  </Item>
+                  <Item value="Save note as template" icon={<LayoutTemplate />} onSelect={run(() => void templates.saveNote(current.name))}>
+                    Save as template…
+                  </Item>
+                </Command.Group>
+              )}
               {current?.kind === "note" && (
                 <Command.Group heading="Export">
                   <Item value="Export note as Markdown" icon={<Download />} onSelect={run(() => void exportNoteMarkdown(current.name))}>

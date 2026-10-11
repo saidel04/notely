@@ -3,27 +3,33 @@ import { BookOpen, Bookmark, FileText, Workflow } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { collectTargets, LinkTarget } from "../../lib/linkTargets";
+import { pageQuery } from "../../lib/links";
 
 /**
- * Picker for "link the selected words to…": notes, highlighted quotes, PDFs, canvases.
- * Anchored under the selection.
+ * Picker for "link the selected words to…": notes, highlighted quotes, PDFs
+ * (or a page of one: type "paper p 12"), canvases. Anchored under the selection.
  */
 export function LinkPicker({
   notebook,
   note,
   anchor,
   selectionText,
+  heading,
   onPick,
   onClose,
 }: {
   notebook: string;
-  note: string;
+  /** The note being edited (left out of the list). */
+  note?: string;
   anchor: { x: number; y: number };
   selectionText: string;
+  /** Replaces the "Link “…” to" line. */
+  heading?: string;
   onPick: (t: LinkTarget) => void;
   onClose: () => void;
 }) {
   const [targets, setTargets] = useState<LinkTarget[] | null>(null);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: anchor.x, top: anchor.y });
 
@@ -49,6 +55,15 @@ export function LinkPicker({
     };
   }, [onClose]);
 
+  // "paper p 12": offer that page of each matching PDF.
+  const pq = pageQuery(query);
+  const pages: LinkTarget[] = pq
+    ? (targets ?? [])
+        .filter((t) => t.kind === "pdf" && t.label.toLowerCase().includes(pq.pdf))
+        .slice(0, 6)
+        .map((t) => ({ ...t, label: `${t.label}, p. ${pq.page}`, fragment: `page=${pq.page}` }))
+    : [];
+
   const groups: [string, LinkTarget["kind"]][] = [
     ["Highlighted quotes", "highlight"],
     ["Bookmarks", "bookmark"],
@@ -69,14 +84,20 @@ export function LinkPicker({
           }
         }}
       >
-        {selectionText && (
-          <div className="truncate border-b border-line px-3.5 pt-2.5 pb-2 text-[11.5px] text-faint">
-            Link <span className="font-medium text-ink">“{selectionText}”</span> to…
-          </div>
+        {heading ? (
+          <div className="truncate border-b border-line px-3.5 pt-2.5 pb-2 text-[11.5px] text-faint">{heading}</div>
+        ) : (
+          selectionText && (
+            <div className="truncate border-b border-line px-3.5 pt-2.5 pb-2 text-[11.5px] text-faint">
+              Link <span className="font-medium text-ink">“{selectionText}”</span> to…
+            </div>
+          )
         )}
         <Command.Input
           autoFocus
-          placeholder="Search notes, quotes, PDFs, canvases…"
+          value={query}
+          onValueChange={setQuery}
+          placeholder="Search notes, quotes, PDFs (“name p 12” for a page)…"
           className="w-full border-b border-line bg-transparent px-3.5 py-2.5 text-[13.5px] text-ink outline-none placeholder:text-faint"
         />
         <Command.List className="max-h-[320px] overflow-y-auto p-1.5 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-faint [&_[cmdk-group-heading]]:uppercase">
@@ -84,6 +105,27 @@ export function LinkPicker({
             <div className="px-3 py-5 text-center text-[12.5px] text-faint">Loading…</div>
           ) : (
             <Command.Empty className="px-3 py-5 text-center text-[12.5px] text-faint">Nothing matches</Command.Empty>
+          )}
+          {targets && pages.length > 0 && (
+            <Command.Group heading="Pages">
+              {pages.map((t) => (
+                <Command.Item
+                  key={`page ${t.target} ${t.fragment}`}
+                  value={`page ${t.target} ${t.fragment}`}
+                  forceMount
+                  onSelect={() => onPick(t)}
+                  className="flex items-start gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-ink data-[selected=true]:bg-accent-soft"
+                >
+                  <span className="mt-px text-faint">
+                    <BookOpen size={14} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="truncate">{t.label}</span>
+                    {t.detail && <span className="block truncate text-[11.5px] text-faint">{t.detail}</span>}
+                  </span>
+                </Command.Item>
+              ))}
+            </Command.Group>
           )}
           {targets &&
             groups.map(([heading, kind]) => {

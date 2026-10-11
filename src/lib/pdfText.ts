@@ -8,11 +8,17 @@ import type { Rect } from "../store/highlightStore";
 export interface ItemGeo {
   start: number;
   end: number;
-  /** Item box normalized to the page (0–1), top-left origin. */
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  // The item's glyph box as three points in page-normalized viewport space
+  // (0–1, top-left origin): the top-left and bottom-left corners at the start of
+  // the baseline, plus the advance delta to the far edge. Storing it this way
+  // keeps the box correct for rotated or skewed text — `matchRects` interpolates
+  // a sub-range along the real baseline instead of assuming left-to-right.
+  tx: number;
+  ty: number;
+  bx: number;
+  by: number;
+  dx: number;
+  dy: number;
 }
 
 export interface PageText {
@@ -52,18 +58,24 @@ export async function extractPage(page: PDFPageProxy): Promise<PageText> {
   const geo: ItemGeo[] = [];
   for (const [start, end, it] of spans) {
     if (end === start) continue;
-    const [, , c, d, e, f] = it.transform;
-    const fontH = Math.hypot(c, d) || it.height || 10;
-    // Text items are positioned at their baseline; pad for ascenders/descenders.
-    const [x1, y1] = vp.convertToViewportPoint(e, f - fontH * 0.22) as number[];
-    const [x2, y2] = vp.convertToViewportPoint(e + it.width, f + fontH * 0.88) as number[];
+    const [a, b, c, d, e, f] = it.transform;
+    // Text's own axes in PDF space: (a,b) advance direction, (c,d) up (height fontH).
+    const adv = Math.hypot(a, b) || 1;
+    const [ux, uy] = [a / adv, b / adv]; // unit advance
+    const [ax, ay] = [ux * it.width, uy * it.width]; // full advance vector
+    // Baseline origin, padded up for ascenders (0.88) and down for descenders (0.22).
+    const topL = vp.convertToViewportPoint(e + c * 0.88, f + d * 0.88) as number[];
+    const botL = vp.convertToViewportPoint(e - c * 0.22, f - d * 0.22) as number[];
+    const topR = vp.convertToViewportPoint(e + ax + c * 0.88, f + ay + d * 0.88) as number[];
     geo.push({
       start,
       end,
-      x: Math.min(x1, x2) / vp.width,
-      y: Math.min(y1, y2) / vp.height,
-      w: Math.abs(x2 - x1) / vp.width,
-      h: Math.abs(y2 - y1) / vp.height,
+      tx: topL[0] / vp.width,
+      ty: topL[1] / vp.height,
+      bx: botL[0] / vp.width,
+      by: botL[1] / vp.height,
+      dx: (topR[0] - topL[0]) / vp.width,
+      dy: (topR[1] - topL[1]) / vp.height,
     });
   }
   return { text, items: geo };
@@ -110,7 +122,11 @@ export function findInPages(pages: string[], query: string, limit = 2000): TextM
   return out;
 }
 
-/** Approximate rects for a character range, interpolating within each text item. */
+/**
+ * Approximate rects for a character range. The range is interpolated along each
+ * item's real baseline (so rotated/skewed text stays aligned), and the result is
+ * the axis-aligned bounding box of that slice's four corners.
+ */
 export function matchRects(page: number, pt: PageText, start: number, end: number): Rect[] {
   const rects: Rect[] = [];
   for (const it of pt.items) {
@@ -118,7 +134,12 @@ export function matchRects(page: number, pt: PageText, start: number, end: numbe
     const len = it.end - it.start;
     const a = (Math.max(start, it.start) - it.start) / len;
     const b = (Math.min(end, it.end) - it.start) / len;
-    rects.push({ page, x: it.x + it.w * a, y: it.y, w: it.w * (b - a), h: it.h });
+    // Four corners of the slice [a, b] along the baseline.
+    const xs = [it.tx + it.dx * a, it.tx + it.dx * b, it.bx + it.dx * a, it.bx + it.dx * b];
+    const ys = [it.ty + it.dy * a, it.ty + it.dy * b, it.by + it.dy * a, it.by + it.dy * b];
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    rects.push({ page, x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y });
   }
   return rects;
 }
