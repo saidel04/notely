@@ -120,6 +120,21 @@ const hide = Decoration.replace({});
 const mark = (cls: string) => Decoration.mark({ class: cls });
 const line = (cls: string) => Decoration.line({ class: cls });
 
+/**
+ * Hanging indent for a list item, keyed by the column its content starts at, so
+ * wrapped lines line up under the text instead of running back under the bullet.
+ * Cached so rebuilds reuse the same decoration (stable identity, no DOM churn).
+ */
+const hangCache = new Map<number, Decoration>();
+function hangingIndent(col: number) {
+  let d = hangCache.get(col);
+  if (!d) {
+    d = Decoration.line({ attributes: { style: `text-indent:-${col}ch;padding-left:${col}ch` } });
+    hangCache.set(col, d);
+  }
+  return d;
+}
+
 function activeLines(state: EditorState) {
   const lines = new Set<number>();
   for (const r of state.selection.ranges) {
@@ -251,6 +266,11 @@ function build(view: EditorView, cfg: LivePreviewConfig): DecorationSet {
             }
             break;
           case "ListMark": {
+            // Align wrapped lines under the content: hang by where the content starts.
+            const markLine = state.doc.lineAt(node.from);
+            const markEnd = node.to - markLine.from;
+            const gap = /^ {1,4}/.exec(markLine.text.slice(markEnd))?.[0].length ?? 0;
+            decos.push(hangingIndent(markEnd + gap).range(markLine.from));
             const list = node.node.parent?.parent?.name;
             const isTask = node.node.parent?.getChild("Task");
             if (list === "BulletList" && !isActive(node.from)) {
